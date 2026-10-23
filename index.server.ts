@@ -5,7 +5,7 @@ import { FusionState } from "./server/state";
 import { handleDelegation, handleSidekickTurnEnded } from "./server/orchestration";
 import { LABEL, isSidekick, isLead } from "./shared/labels";
 import { FusionMcpHttpServer } from "./server/mcp-server";
-import { parseFencedBrief, hasFencedBrief } from "./server/fenced";
+import { parseFencedBrief, getFencedBriefPrompt } from "./server/fenced";
 
 const MCP_PORT = 31337;
 
@@ -14,6 +14,7 @@ export default function contribute(server: PluginServerContext) {
   const state = new FusionState();
   let settings: FusionSettings = DEFAULT_SETTINGS;
   let stopped = false;
+  const fencedPromptedAgents = new Set<string>();
 
   // Start MCP server
   const mcpServer = new FusionMcpHttpServer(MCP_PORT);
@@ -124,24 +125,44 @@ export default function contribute(server: PluginServerContext) {
     }
   });
 
-  // Handle lead turn ended to check for fenced briefs
+  // Handle lead turn ended for fenced delegation fallback and MCP rejection recovery.
   server.on("agent.turn_ended", async (event, { paseo }) => {
-    if (stopped || !settings.enabled) return;
-    if (event.outcome.kind === "canceled") return;
+    if (stopped || !settings.enabled || !settings.fallback_to_fenced || !isLead(event.agent.labels)) return;
 
-    // Only process lead agents
-    if (!isLead(event.agent.labels)) {
+    const profileId = event.agent.labels[LABEL.fusionProfile] || settings.default_profile;
+    const profile = settings.profiles.find((item) => item.id === profileId);
+    if (!profile) return;
+
+    if (event.outcome.kind !== "failed") fencedPromptedAgents.delete(event.agent.id);
+    const assistantText = latestAssistantText(event.timeline);
+    const brief = parseFencedBrief(assistantText);
+    if (brief) {
+      fencedPromptedAgents.delete(event.agent.id);
+      void handleDelegation(paseo, settings, state, {
+        leadId: event.agent.id,
+        leadProvider: event.agent.provider,
+        leadCwd: event.agent.cwd,
+        profile,
+        brief,
+      }).then((result) => {
+        if (result.error) console.error("[fusion] fenced delegation failed", event.agent.id, result.error);
+      }).catch((error) => {
+        console.error("[fusion] fenced delegation crashed", event.agent.id, error);
+      });
       return;
     }
 
-    // Check if fenced-text protocol is enabled
-    if (!settings.fallback_to_fenced) {
-      return;
+    if (event.outcome.kind !== "failed" || fencedPromptedAgents.has(event.agent.id) || !isMcpProviderRejection(event)) return;
+    fencedPromptedAgents.add(event.agent.id);
+    try {
+      await paseo.agents.ref(event.agent.id).send(
+        `The provider rejected or could not start the Fusion MCP tools. Continue using this text protocol instead.\n\n${getFencedBriefPrompt(profile)}`,
+      );
+      console.warn("[fusion] MCP rejected by provider; requested fenced-text fallback", event.agent.id);
+    } catch (error) {
+      fencedPromptedAgents.delete(event.agent.id);
+      console.error("[fusion] Could not request fenced-text fallback", event.agent.id, error);
     }
-
-    // Get the last message from the timeline
-    // TODO: Extract the text and check for fenced brief
-    // For now, this is a placeholder
   });
 
   // Handle sidekick turn ended to extract reports
@@ -220,8 +241,47 @@ export default function contribute(server: PluginServerContext) {
     stopped = true;
     unsubscribe();
     clearInterval(cleanupInterval);
+    fencedPromptedAgents.clear();
     mcpServer.stop().catch((error) => {
       console.error("[fusion] Failed to stop MCP server:", error);
     });
   };
+}
+
+function latestAssistantText(timeline: readonly unknown[]): string {
+  let start = 0;
+  for (let index = timeline.length - 1; index >= 0; index--) {
+    const item = timeline[index] as { type?: string };
+    if (item.type === "user_message") {
+      start = index + 1;
+      break;
+    }
+  }
+
+  const chunks: string[] = [];
+  for (let index = timeline.length - 1; index >= start; index--) {
+    const item = timeline[index] as { type?: string; text?: string; data?: { content?: string } };
+    if (item.type === "assistant_message" && typeof item.text === "string") chunks.unshift(item.text);
+    else if (item.type === "assistant" && typeof item.data?.content === "string") chunks.unshift(item.data.content);
+    else if (chunks.length > 0 && item.type !== "reasoning") break;
+  }
+  return chunks.join("").trim();
+}
+
+function isMcpProviderRejection(event: { outcome: { kind: string; error?: { code?: string; message?: string } }; timeline: readonly unknown[] }): boolean {
+  const evidence: string[] = [];
+  if (event.outcome.error) evidence.push(`${event.outcome.error.code || ""} ${event.outcome.error.message || ""}`);
+  let turnStart = 0;
+  for (let index = event.timeline.length - 1; index >= 0; index--) {
+    if ((event.timeline[index] as { type?: string }).type === "user_message") {
+      turnStart = index + 1;
+      break;
+    }
+  }
+  for (const raw of event.timeline.slice(turnStart)) {
+    const item = raw as { type?: string; message?: string };
+    if ((item.type === "error" || item.type === "notification") && item.message) evidence.push(item.message);
+  }
+  const text = evidence.join("\n");
+  return /(?:mcp|model context protocol|fusion).{0,120}(?:reject|unsupported|not supported|not available|failed|failure|invalid|connect|connection|start)|(?:reject|unsupported|not supported|not available|failed|failure|invalid|connect|connection|start).{0,120}(?:mcp|model context protocol|fusion)/is.test(text);
 }

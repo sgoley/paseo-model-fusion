@@ -39,7 +39,6 @@ A Paseo plugin implementing [Local Fusion](https://cognition.com/blog/local-fusi
 - [x] Composer pill for sidekick state, refreshed from the active delegation RPC
 - [ ] Workspace panel for active sidekicks
 - [ ] State persistence for crash recovery (currently in-memory only)
-- [ ] Complete fenced-text protocol integration in lead turn_ended hook
 - [ ] Test with actual providers (Codex, Claude, OMP, Devin, Cursor)
 - [ ] Add more model pair profiles
 

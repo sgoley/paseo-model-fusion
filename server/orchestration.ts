@@ -68,6 +68,7 @@ export async function handleDelegation(
     }
 
     state.setSidekickRunning(sidekickId);
+    state.setSidekickBriefId(sidekickId, briefId);
   } else {
     // Create a new sidekick
     log("Creating new sidekick");
@@ -309,7 +310,7 @@ export async function handleSidekickTurnEnded(
   }
 
   // Check if the turn ended with an error
-  if (event.outcome.kind === "error") {
+  if (event.outcome.kind === "failed") {
     log("Sidekick ended with error", agent.id);
     state.setSidekickFailed(agent.id);
     if (agent.labels[LABEL.fusionBriefId]) state.updateDelegationStatus(agent.labels[LABEL.fusionBriefId], "failed");

@@ -68,6 +68,11 @@ export class FusionState {
     }
   }
 
+  setSidekickBriefId(sidekickId: string, briefId: string): void {
+    const state = this.sidekicks.get(sidekickId);
+    if (state) state.briefId = briefId;
+  }
+
   /** Mark a sidekick as idle (available for reuse). */
   setSidekickIdle(sidekickId: string): void {
     const state = this.sidekicks.get(sidekickId);
@@ -123,7 +128,7 @@ export class FusionState {
     const delegation = this.delegations.get(briefId);
     if (delegation) {
       delegation.status = status;
-      if (status === "completed" || status === "failed" || status === "timeout") {
+      if (status === "completed" || status === "blocked" || status === "failed" || status === "timeout") {
         delegation.completedAt = this.now();
       }
     }
