@@ -36,7 +36,7 @@ A Paseo plugin implementing [Local Fusion](https://cognition.com/blog/local-fusi
 
 **Remaining TODOs:**
 
-- [ ] Composer pill for sidekick state (requires active delegation tracking via RPC)
+- [x] Composer pill for sidekick state, refreshed from the active delegation RPC
 - [ ] Workspace panel for active sidekicks
 - [ ] State persistence for crash recovery (currently in-memory only)
 - [ ] Complete fenced-text protocol integration in lead turn_ended hook
@@ -62,7 +62,7 @@ In Paseo Settings → Plugins → Model Fusion:
 - **Default profile**: Which profile to use by default
 - **Use MCP delegation**: Whether to use MCP tools (fallback to fenced-text if provider doesn't support it)
 - **Fallback to fenced**: Whether to use fenced-text protocol if MCP is rejected
-- **Show composer pill**: Display sidekick state in composer (not yet implemented)
+- **Show composer pill**: Display each Fusion lead’s latest delegation state, sidekick, and elapsed time in the composer
 - **Show timeline card**: Display delegation status cards in timeline
 
 ## Usage

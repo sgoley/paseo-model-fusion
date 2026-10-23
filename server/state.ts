@@ -158,12 +158,13 @@ export class FusionState {
 
   /** Get delegation by lead agent ID (for reconciliation on crash). */
   getDelegationByLead(leadId: string): DelegationState | null {
+    let latest: DelegationState | null = null;
     for (const delegation of this.delegations.values()) {
-      if (delegation.leadId === leadId) {
-        return delegation;
+      if (delegation.leadId === leadId && (!latest || delegation.dispatchedAt > latest.dispatchedAt)) {
+        latest = delegation;
       }
     }
-    return null;
+    return latest;
   }
 
   /** Get sidekick state. */

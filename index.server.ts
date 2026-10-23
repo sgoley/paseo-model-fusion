@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { fusionSettings, DEFAULT_SETTINGS, type FusionSettings, type Profile } from "./shared/settings";
-import { delegateRpc, reportRpc, getSettingsRpc } from "./shared/contracts";
+import { delegateRpc, reportRpc, getSettingsRpc, getDelegationRpc } from "./shared/contracts";
 import { FusionState } from "./server/state";
 import { handleDelegation, handleSidekickTurnEnded } from "./server/orchestration";
 import { LABEL, isSidekick, isLead } from "./shared/labels";
@@ -191,6 +191,23 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(getSettingsRpc, async () => {
     return settings;
+  });
+
+  server.handle(getDelegationRpc, async ({ leadAgentId }) => {
+    if (!settings.enabled) return { delegation: null };
+    const delegation = state.getDelegationByLead(leadAgentId);
+    if (!delegation) return { delegation: null };
+    const sidekick = delegation.sidekickId ? state.getSidekick(delegation.sidekickId) : null;
+    const profile = sidekick ? settings.profiles.find((item) => item.id === sidekick.profileId) : null;
+    return {
+      delegation: {
+        status: delegation.status,
+        sidekick_agent_id: delegation.sidekickId,
+        sidekick_model: profile ? `${profile.sidekick.provider}/${profile.sidekick.model || "default"}` : null,
+        brief: delegation.brief.goal,
+        dispatched_at: delegation.dispatchedAt,
+      },
+    };
   });
 
   // Periodic cleanup

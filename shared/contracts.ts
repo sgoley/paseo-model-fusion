@@ -83,3 +83,17 @@ export const getSettingsRpc = defineRpc({
   input: z.object({}),
   output: z.any(), // FusionSettings, but avoiding circular dep
 });
+
+export const getDelegationRpc = defineRpc({
+  name: "fusion.get-delegation",
+  input: z.object({ leadAgentId: z.string().min(1) }),
+  output: z.object({
+    delegation: z.object({
+      status: DelegationStatusSchema,
+      sidekick_agent_id: z.string().nullable(),
+      sidekick_model: z.string().nullable(),
+      brief: z.string(),
+      dispatched_at: z.number(),
+    }).nullable(),
+  }),
+});

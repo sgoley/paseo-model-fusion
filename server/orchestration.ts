@@ -130,6 +130,7 @@ export async function handleDelegation(
   const briefPrompt = buildBriefPrompt(brief, profile);
   try {
     await paseo.agents.ref(sidekickId).send(briefPrompt);
+    state.updateDelegationStatus(briefId, "running");
     log("Brief sent to sidekick", sidekickId);
   } catch (error) {
     log("Failed to send brief to sidekick", sidekickId, error);
@@ -311,6 +312,7 @@ export async function handleSidekickTurnEnded(
   if (event.outcome.kind === "error") {
     log("Sidekick ended with error", agent.id);
     state.setSidekickFailed(agent.id);
+    if (agent.labels[LABEL.fusionBriefId]) state.updateDelegationStatus(agent.labels[LABEL.fusionBriefId], "failed");
     await updateDelegationCard(paseo, leadId, {
       status: "failed",
       lead_agent_id: leadId,
@@ -345,6 +347,7 @@ export async function handleSidekickTurnEnded(
   // Try to extract a report from the timeline
   const report = await extractReport(paseo, agent.id, event.timeline);
   if (!report) {
+    if (sidekickState) state.updateDelegationStatus(sidekickState.briefId, "completed");
     log("No report found in sidekick timeline", agent.id);
     // Still update the card to show completion
     await updateDelegationCard(paseo, leadId, {
@@ -367,6 +370,10 @@ export async function handleSidekickTurnEnded(
       updated_at: new Date().toISOString(),
     });
     return;
+  }
+
+  if (sidekickState) {
+    state.updateDelegationStatus(sidekickState.briefId, report.status === "blocked" || report.status === "needs-clarification" ? "blocked" : "completed");
   }
 
   // Send the report to the lead
