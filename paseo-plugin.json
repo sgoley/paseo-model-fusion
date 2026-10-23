@@ -1,0 +1,8 @@
+{
+  "id": "paseo-model-fusion",
+  "name": "Model Fusion",
+  "description": "Local Fusion: frontier lead + cheaper sidekick with separate persistent contexts, exchanging only briefs and reports.",
+  "requirements": {
+    "paseo": ">=0.13.0-beta.1"
+  }
+}
