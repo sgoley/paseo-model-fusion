@@ -8,6 +8,8 @@ interface SidekickState {
   createdAt: number;
   lastUsedAt: number;
   status: "idle" | "running" | "completed" | "failed";
+  turnCount: number;
+  totalCost: number;
 }
 
 interface DelegationState {
@@ -23,6 +25,7 @@ interface DelegationState {
   status: "dispatched" | "running" | "completed" | "blocked" | "failed" | "timeout";
   dispatchedAt: number;
   completedAt?: number;
+  timeoutAt?: number;
 }
 
 /**
@@ -32,6 +35,7 @@ interface DelegationState {
 export class FusionState {
   private readonly sidekicks = new Map<string, SidekickState>();
   private readonly delegations = new Map<string, DelegationState>();
+  private readonly timeoutTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -81,6 +85,34 @@ export class FusionState {
     }
   }
 
+  /** Increment sidekick turn count. */
+  incrementSidekickTurns(sidekickId: string): void {
+    const state = this.sidekicks.get(sidekickId);
+    if (state) {
+      state.turnCount++;
+    }
+  }
+
+  /** Add cost to sidekick. */
+  addSidekickCost(sidekickId: string, cost: number): void {
+    const state = this.sidekicks.get(sidekickId);
+    if (state) {
+      state.totalCost += cost;
+    }
+  }
+
+  /** Check if sidekick has exceeded max turns. */
+  hasExceededMaxTurns(sidekickId: string, maxTurns: number): boolean {
+    const state = this.sidekicks.get(sidekickId);
+    return state ? state.turnCount >= maxTurns : false;
+  }
+
+  /** Check if sidekick has exceeded max cost. */
+  hasExceededMaxCost(sidekickId: string, maxCost: number): boolean {
+    const state = this.sidekicks.get(sidekickId);
+    return state ? state.totalCost >= maxCost : false;
+  }
+
   /** Record a new delegation. */
   recordDelegation(delegation: DelegationState): void {
     this.delegations.set(delegation.briefId, delegation);
@@ -94,6 +126,28 @@ export class FusionState {
       if (status === "completed" || status === "failed" || status === "timeout") {
         delegation.completedAt = this.now();
       }
+    }
+  }
+
+  /** Set a timeout for a delegation. */
+  setDelegationTimeout(briefId: string, timeoutMs: number, callback: () => void): void {
+    const delegation = this.delegations.get(briefId);
+    if (delegation) {
+      delegation.timeoutAt = this.now() + timeoutMs;
+      const timer = setTimeout(() => {
+        this.clearDelegationTimeout(briefId);
+        callback();
+      }, timeoutMs);
+      this.timeoutTimers.set(briefId, timer);
+    }
+  }
+
+  /** Clear a delegation timeout. */
+  clearDelegationTimeout(briefId: string): void {
+    const timer = this.timeoutTimers.get(briefId);
+    if (timer) {
+      clearTimeout(timer);
+      this.timeoutTimers.delete(briefId);
     }
   }
 
@@ -112,11 +166,17 @@ export class FusionState {
     return null;
   }
 
+  /** Get sidekick state. */
+  getSidekick(sidekickId: string): SidekickState | null {
+    return this.sidekicks.get(sidekickId) ?? null;
+  }
+
   /** Clean up old delegations (older than 7 days). */
   cleanupOldDelegations(): void {
     const cutoff = this.now() - 7 * 24 * 60 * 60 * 1000;
     for (const [briefId, delegation] of this.delegations) {
       if (delegation.completedAt && delegation.completedAt < cutoff) {
+        this.clearDelegationTimeout(briefId);
         this.delegations.delete(briefId);
       }
     }
@@ -134,6 +194,11 @@ export class FusionState {
 
   /** Clear all state (called on settings change). */
   clear(): void {
+    // Clear all timeout timers
+    for (const [briefId, timer] of this.timeoutTimers) {
+      clearTimeout(timer);
+    }
+    this.timeoutTimers.clear();
     this.sidekicks.clear();
     this.delegations.clear();
   }

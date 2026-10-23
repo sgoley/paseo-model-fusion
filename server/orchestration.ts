@@ -48,15 +48,29 @@ export async function handleDelegation(
   // Check if we can reuse an existing sidekick
   const existingSidekick = state.findReusableSidekick(leadId, profile.id);
   let sidekickId: string;
+  const briefId = `${leadId}-${Date.now()}`;
 
   if (existingSidekick) {
     log("Reusing existing sidekick", existingSidekick.sidekickId);
     sidekickId = existingSidekick.sidekickId;
+
+    // Check limits
+    if (state.hasExceededMaxTurns(sidekickId, profile.max_turns)) {
+      log("Sidekick exceeded max turns", sidekickId);
+      state.setSidekickFailed(sidekickId);
+      return { sidekickId: null, error: "Sidekick exceeded max turns" };
+    }
+
+    if (state.hasExceededMaxCost(sidekickId, profile.max_cost)) {
+      log("Sidekick exceeded max cost", sidekickId);
+      state.setSidekickFailed(sidekickId);
+      return { sidekickId: null, error: "Sidekick exceeded max cost" };
+    }
+
     state.setSidekickRunning(sidekickId);
   } else {
     // Create a new sidekick
     log("Creating new sidekick");
-    const briefId = `${leadId}-${Date.now()}`;
     const sidekick = await createSidekick(paseo, leadId, leadCwd, profile, briefId);
     if (!sidekick) {
       return { sidekickId: null, error: "Failed to create sidekick" };
@@ -71,6 +85,8 @@ export async function handleDelegation(
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       status: "running",
+      turnCount: 0,
+      totalCost: 0,
     });
   }
 
@@ -78,10 +94,36 @@ export async function handleDelegation(
   state.recordDelegation({
     leadId,
     sidekickId,
-    briefId: `${leadId}-${Date.now()}`,
+    briefId,
     brief,
     status: "dispatched",
     dispatchedAt: Date.now(),
+  });
+
+  // Set timeout for the delegation
+  state.setDelegationTimeout(briefId, profile.timeout_seconds * 1000, async () => {
+    log("Delegation timeout", briefId);
+    state.updateDelegationStatus(briefId, "timeout");
+    state.setSidekickIdle(sidekickId);
+    await updateDelegationCard(paseo, leadId, {
+      status: "timeout",
+      lead_agent_id: leadId,
+      sidekick_agent_id: sidekickId,
+      sidekick_model: `${profile.sidekick.provider}/${profile.sidekick.model || "default"}`,
+      brief: brief.goal,
+      report: {
+        status: "blocked",
+        summary: "Sidekick timed out",
+        changes: [],
+        tests: [],
+        concerns: ["Delegation exceeded timeout"],
+        suggested_next: "Take over or retry with a longer timeout",
+      },
+      cost_lead: null,
+      cost_sidekick: null,
+      at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
   });
 
   // Send the brief to the sidekick
@@ -91,7 +133,9 @@ export async function handleDelegation(
     log("Brief sent to sidekick", sidekickId);
   } catch (error) {
     log("Failed to send brief to sidekick", sidekickId, error);
+    state.clearDelegationTimeout(briefId);
     state.setSidekickFailed(sidekickId);
+    state.updateDelegationStatus(briefId, "failed");
     return { sidekickId: null, error: "Failed to send brief to sidekick" };
   }
 
@@ -249,6 +293,52 @@ export async function handleSidekickTurnEnded(
 
   log("Sidekick turn ended", agent.id, event.outcome.kind);
 
+  // Increment turn count
+  state.incrementSidekickTurns(agent.id);
+
+  // Try to get cost from agent
+  try {
+    const agentHandle = await paseo.agents.ref(agent.id).refresh();
+    if (agentHandle?.agent.lastUsage) {
+      const cost = agentHandle.agent.lastUsage.totalCost || 0;
+      state.addSidekickCost(agent.id, cost);
+    }
+  } catch (error) {
+    log("Failed to get sidekick cost", agent.id, error);
+  }
+
+  // Check if the turn ended with an error
+  if (event.outcome.kind === "error") {
+    log("Sidekick ended with error", agent.id);
+    state.setSidekickFailed(agent.id);
+    await updateDelegationCard(paseo, leadId, {
+      status: "failed",
+      lead_agent_id: leadId,
+      sidekick_agent_id: agent.id,
+      sidekick_model: `${profile.sidekick.provider}/${profile.sidekick.model || "default"}`,
+      brief: "Brief text",
+      report: {
+        status: "blocked",
+        summary: "Sidekick encountered an error",
+        changes: [],
+        tests: [],
+        concerns: ["Sidekick crashed or failed"],
+        suggested_next: "Take over or retry",
+      },
+      cost_lead: null,
+      cost_sidekick: state.getSidekick(agent.id)?.totalCost || null,
+      at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    return;
+  }
+
+  // Clear timeout since the sidekick completed
+  const sidekickState = state.getSidekick(agent.id);
+  if (sidekickState) {
+    state.clearDelegationTimeout(sidekickState.briefId);
+  }
+
   // Mark sidekick as idle
   state.setSidekickIdle(agent.id);
 
@@ -272,7 +362,7 @@ export async function handleSidekickTurnEnded(
         suggested_next: null,
       },
       cost_lead: null,
-      cost_sidekick: null,
+      cost_sidekick: state.getSidekick(agent.id)?.totalCost || null,
       at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
@@ -297,7 +387,7 @@ export async function handleSidekickTurnEnded(
     brief: "Brief text",
     report,
     cost_lead: null,
-    cost_sidekick: null,
+    cost_sidekick: state.getSidekick(agent.id)?.totalCost || null,
     at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   });
@@ -308,9 +398,106 @@ async function extractReport(
   sidekickId: string,
   timeline: readonly unknown[],
 ): Promise<SidekickReport | null> {
-  // TODO: Parse the timeline to find a report tool call or parse the final message
-  // For now, return null as a placeholder
+  // Try to find a report tool call in the timeline
+  for (const entry of timeline) {
+    const item = entry as { item?: { type?: string; data?: unknown } };
+    if (item.item?.type === "tool_use" && item.item.data) {
+      const data = item.item.data as { name?: string; input?: unknown };
+      if (data.name === "report" && data.input) {
+        const reportInput = data.input as SidekickReport;
+        // Validate the report input
+        if (
+          reportInput.status &&
+          reportInput.summary &&
+          Array.isArray(reportInput.changes) &&
+          Array.isArray(reportInput.tests) &&
+          Array.isArray(reportInput.concerns)
+        ) {
+          log("Extracted report from tool call", sidekickId);
+          return reportInput;
+        }
+      }
+    }
+  }
+
+  // If no tool call found, try to parse the final message
+  // Look for a fenced report block in the last assistant message
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const entry = timeline[i] as { item?: { type?: string; data?: unknown } };
+    if (entry.item?.type === "assistant" && entry.item.data) {
+      const data = entry.item.data as { content?: string };
+      if (data.content) {
+        const report = parseReportFromText(data.content);
+        if (report) {
+          log("Extracted report from message", sidekickId);
+          return report;
+        }
+      }
+    }
+  }
+
   return null;
+}
+
+function parseReportFromText(text: string): SidekickReport | null {
+  // Look for a fenced report block
+  const reportMatch = text.match(/```report\n([\s\S]*?)\n```/);
+  if (!reportMatch) {
+    return null;
+  }
+
+  const reportText = reportMatch[1];
+  const lines = reportText.split("\n");
+
+  const report: SidekickReport = {
+    status: "completed",
+    summary: "",
+    changes: [],
+    tests: [],
+    concerns: [],
+  };
+
+  let currentSection: string | null = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("status:")) {
+      const status = trimmed.slice(7).trim();
+      if (["completed", "blocked", "needs-clarification", "concerns"].includes(status)) {
+        report.status = status as SidekickReport["status"];
+      }
+    } else if (trimmed.startsWith("summary:")) {
+      currentSection = "summary";
+      report.summary = trimmed.slice(8).trim();
+    } else if (trimmed.startsWith("changes:")) {
+      currentSection = "changes";
+    } else if (trimmed.startsWith("tests:")) {
+      currentSection = "tests";
+    } else if (trimmed.startsWith("concerns:")) {
+      currentSection = "concerns";
+    } else if (trimmed.startsWith("suggested_next:")) {
+      report.suggested_next = trimmed.slice(15).trim();
+    } else if (trimmed.startsWith("-") && currentSection) {
+      const item = trimmed.slice(1).trim();
+      if (currentSection === "changes") {
+        report.changes.push(item);
+      } else if (currentSection === "tests") {
+        report.tests.push(item);
+      } else if (currentSection === "concerns") {
+        report.concerns.push(item);
+      }
+    } else if (currentSection === "summary" && trimmed) {
+      report.summary += " " + trimmed;
+    }
+  }
+
+  // Validate that we have at least a summary
+  if (!report.summary) {
+    return null;
+  }
+
+  return report;
 }
 
 function buildReportMessage(report: SidekickReport): string {
