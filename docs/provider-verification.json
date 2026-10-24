@@ -1,0 +1,49 @@
+{
+  "verifiedAt": "2026-10-24T14:31:57.893Z",
+  "paseoVersion": "0.13.0-beta.1",
+  "scope": "Native MCP delegate/report and independent fenced brief/report provider sessions; not a guarantee for every model or account.",
+  "results": [
+    {
+      "provider": "antigravity",
+      "model": "gemini-3.8-flash-low",
+      "mcp": "unsupported",
+      "mcpReason": "Authenticated session completed, but the current Antigravity adapter did not expose the per-session Fusion MCP tools.",
+      "fenced": "passed"
+    },
+    {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "mcp": "passed",
+      "fenced": "passed",
+      "note": "Observed in earlier live protocol checks in this work session; native Cursor and Devin required individual Fusion tool approvals."
+    },
+    {
+      "provider": "omp",
+      "model": "cursor/gemini-3.8-flash",
+      "mcp": "passed",
+      "fenced": "passed",
+      "note": "Observed in earlier live protocol checks in this work session; native Cursor and Devin required individual Fusion tool approvals."
+    },
+    {
+      "provider": "devin",
+      "model": "swe-1-6-slow",
+      "mcp": "passed",
+      "fenced": "passed",
+      "note": "Observed in earlier live protocol checks in this work session; native Cursor and Devin required individual Fusion tool approvals."
+    },
+    {
+      "provider": "cursor",
+      "model": "grok-4.7",
+      "mcp": "passed",
+      "fenced": "passed",
+      "note": "Observed in earlier live protocol checks in this work session; native Cursor and Devin required individual Fusion tool approvals."
+    },
+    {
+      "provider": "claude",
+      "model": null,
+      "mcp": "unavailable",
+      "fenced": "unavailable",
+      "reason": "Native Claude CLI target is not installed or authenticated on a1mini."
+    }
+  ]
+}

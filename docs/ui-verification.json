@@ -1,0 +1,36 @@
+{
+  "verifiedAt": "2026-10-24T14:47:44.685484+00:00",
+  "scope": "Real workspace panel and timeline card with synthetic RPC data and a React Native HTML shim; native app shell not covered.",
+  "viewports": [
+    [
+      390,
+      844
+    ],
+    [
+      1280,
+      800
+    ]
+  ],
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "noHorizontalOverflow": true,
+  "checks": [
+    "preferred model and effort display",
+    "empty task disabled",
+    "profile selection and lead creation",
+    "lead and sidekick navigation",
+    "brief details",
+    "cancel active delegation",
+    "retry saved report delivery",
+    "active filter",
+    "search empty state",
+    "history pagination",
+    "history request error",
+    "lead creation error",
+    "theme colors",
+    "timeline card rendering"
+  ],
+  "visualInspection": "Local Chromium screenshots; connected Paseo browser returned screenshot_no_frame."
+}

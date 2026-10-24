@@ -1,211 +1,206 @@
-import { LABEL } from "../shared/labels";
+import { mkdirSync, readFileSync, renameSync, writeFileSync, openSync, fsyncSync, closeSync, existsSync } from "node:fs";
+import { dirname } from "node:path";
+import { z } from "zod";
+import { BriefSchema, ReportSchema, DelegationStatusSchema, isActive, type Report, type DelegationView } from "../shared/models";
 
-interface SidekickState {
-  sidekickId: string;
-  leadId: string;
-  profileId: string;
-  briefId: string;
-  createdAt: number;
-  lastUsedAt: number;
-  status: "idle" | "running" | "completed" | "failed";
-  turnCount: number;
-  totalCost: number;
-}
+const SidekickSchema = z.object({
+  sidekickId: z.string(), leadId: z.string(), workspaceId: z.string(), profileId: z.string(),
+  profileSignature: z.string(), briefId: z.string(), createdAt: z.number(), lastUsedAt: z.number(),
+  status: z.enum(["idle", "running", "failed"]), turnCount: z.number(), totalCost: z.number(),
+  turnId: z.string().nullable().default(null),
+});
+const DelegationSchema = z.object({
+  briefId: z.string(), reportToken: z.string(), leadId: z.string(), workspaceId: z.string(),
+  profileId: z.string(), sidekickModel: z.string(), sidekickId: z.string().nullable(),
+  leadTurnId: z.string().nullable(), brief: BriefSchema, status: DelegationStatusSchema,
+  dispatchedAt: z.number(), timeoutAt: z.number(), completedAt: z.number().nullable().default(null),
+  report: ReportSchema.nullable().default(null), reportDeliveredAt: z.number().nullable().default(null),
+  error: z.string().nullable().default(null), stopConfirmed: z.boolean().default(false),
+  costLead: z.number().nullable().default(null), costSidekick: z.number().nullable().default(null),
+});
+const SnapshotSchema = z.object({
+  version: z.literal(1), sidekicks: z.array(SidekickSchema), delegations: z.array(DelegationSchema),
+  usageTurns: z.array(z.object({ key: z.string(), at: z.number() })),
+});
+export type SidekickState = z.output<typeof SidekickSchema>;
+export type DelegationState = z.output<typeof DelegationSchema>;
+type NewDelegation = z.input<typeof DelegationSchema>;
 
-interface DelegationState {
-  leadId: string;
-  sidekickId: string | null;
-  briefId: string;
-  brief: {
-    goal: string;
-    constraints?: string;
-    success_criteria?: string;
-    files_hint?: string[];
-  };
-  status: "dispatched" | "running" | "completed" | "blocked" | "failed" | "timeout";
-  dispatchedAt: number;
-  completedAt?: number;
-  timeoutAt?: number;
-}
-
-/**
- * In-memory fusion state. Lost on reload or daemon restart.
- * For crash recovery, this should persist to a workspace-local JSON file.
- */
 export class FusionState {
   private readonly sidekicks = new Map<string, SidekickState>();
   private readonly delegations = new Map<string, DelegationState>();
-  private readonly timeoutTimers = new Map<string, NodeJS.Timeout>();
+  private readonly usageTurns = new Map<string, number>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly now: () => number;
+  readonly filePath: string | undefined;
 
-  constructor(private readonly now: () => number = Date.now) {}
-
-  /** Register a sidekick for reuse across briefs. */
-  registerSidekick(state: SidekickState): void {
-    this.sidekicks.set(state.sidekickId, state);
+  constructor(options: { filePath?: string; now?: () => number } = {}) {
+    this.now = options.now || Date.now;
+    this.filePath = options.filePath;
+    if (!this.filePath || !existsSync(this.filePath)) return;
+    const raw = readFileSync(this.filePath, "utf8");
+    let snapshot: z.output<typeof SnapshotSchema>;
+    try {
+      const json = JSON.parse(raw);
+      if (json.version !== 1) throw new Error("Unsupported Fusion state version; refusing to overwrite it");
+      snapshot = SnapshotSchema.parse(json);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Unsupported")) throw error;
+      const backup = this.filePath + ".corrupt-" + this.now();
+      renameSync(this.filePath, backup);
+      console.error("[fusion] Invalid state preserved at " + backup, error);
+      return;
+    }
+    for (const item of snapshot.sidekicks) this.sidekicks.set(item.sidekickId, item);
+    for (const item of snapshot.delegations) this.delegations.set(item.briefId, item);
+    for (const item of snapshot.usageTurns) this.usageTurns.set(item.key, item.at);
   }
 
-  /** Find an existing sidekick for a lead and profile that is idle. */
-  findReusableSidekick(leadId: string, profileId: string): SidekickState | null {
-    for (const [id, state] of this.sidekicks) {
-      if (
-        state.leadId === leadId &&
-        state.profileId === profileId &&
-        state.status === "idle" &&
-        this.now() - state.lastUsedAt < 24 * 60 * 60 * 1000 // Reuse within 24h
-      ) {
-        return state;
+  flush(): void {
+    if (!this.filePath) return;
+    const dir = dirname(this.filePath);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const temporary = this.filePath + "." + process.pid + ".tmp";
+    writeFileSync(temporary, JSON.stringify({
+      version: 1, sidekicks: [...this.sidekicks.values()], delegations: [...this.delegations.values()],
+      usageTurns: [...this.usageTurns].map(([key, at]) => ({ key, at })),
+    }), { mode: 0o600 });
+    const fd = openSync(temporary, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    renameSync(temporary, this.filePath);
+    const directory = openSync(dir, "r");
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  }
+
+  recordDelegation(input: NewDelegation): DelegationState {
+    const item = DelegationSchema.parse(input);
+    this.delegations.set(item.briefId, item);
+    this.flush();
+    return item;
+  }
+  updateDelegation(id: string, patch: Partial<DelegationState>): DelegationState {
+    const current = this.delegations.get(id);
+    if (!current) throw new Error("Delegation not found");
+    Object.assign(current, patch);
+    if (!isActive(current.status) && current.completedAt === null) current.completedAt = this.now();
+    this.flush();
+    return current;
+  }
+  getDelegation(id: string) { return this.delegations.get(id) ?? null; }
+  getDelegations() { return [...this.delegations.values()]; }
+  getDelegationByLead(id: string) { return this.newest((item) => item.leadId === id); }
+  getDelegationBySidekick(id: string) {
+    const sidekick = this.sidekicks.get(id);
+    return sidekick ? this.getDelegation(sidekick.briefId) : this.newest((item) => item.sidekickId === id);
+  }
+  private newest(predicate: (item: DelegationState) => boolean): DelegationState | null {
+    return [...this.delegations.values()].reverse().find(predicate) ?? null;
+  }
+  hasDelegationForTurn(leadId: string, turnId: string) {
+    return [...this.delegations.values()].some((item) => item.leadId === leadId && item.leadTurnId === turnId);
+  }
+  registerSidekick(item: SidekickState): void { this.sidekicks.set(item.sidekickId, SidekickSchema.parse(item)); this.flush(); }
+  getSidekick(id: string) { return this.sidekicks.get(id) ?? null; }
+  getSidekicks() { return [...this.sidekicks.values()]; }
+  updateSidekick(id: string, patch: Partial<SidekickState>): void {
+    const current = this.sidekicks.get(id);
+    if (current) { Object.assign(current, patch); this.flush(); }
+  }
+  findReusableSidekick(leadId: string, signature: string, maxTurns: number, maxCost: number): SidekickState | null {
+    return [...this.sidekicks.values()].find((item) =>
+      item.leadId === leadId && item.profileSignature === signature && item.status === "idle" &&
+      item.turnCount < maxTurns && item.totalCost < maxCost &&
+      this.now() - item.lastUsedAt < 86_400_000,
+    ) ?? null;
+  }
+  acceptReport(id: string, token: string, report: Report): DelegationState | null {
+    const item = this.getDelegation(id);
+    if (!item || token !== item.reportToken) return null;
+    if (item.report) return JSON.stringify(item.report) === JSON.stringify(report) ? item : null;
+    if (!isActive(item.status)) return null;
+    this.clearTimer(id);
+    return this.updateDelegation(id, {
+      report, status: report.status === "blocked" || report.status === "needs-clarification" ? "blocked" : "completed",
+    });
+  }
+  recordUsage(agentId: string, turnId: string, cost: number | null, role: "lead" | "sidekick"): boolean {
+    const key = agentId + ":" + turnId;
+    if (this.usageTurns.has(key)) return false;
+    this.usageTurns.set(key, this.now());
+    const validCost = typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null;
+    if (role === "sidekick") {
+      const sidekick = this.sidekicks.get(agentId);
+      if (sidekick) {
+        sidekick.turnCount++;
+        if (validCost !== null) sidekick.totalCost += validCost;
+      }
+      const delegation = this.getDelegationBySidekick(agentId);
+      if (delegation && validCost !== null) delegation.costSidekick = (delegation.costSidekick ?? 0) + validCost;
+    } else if (validCost !== null) {
+      let targets = this.getDelegations().filter((item) => item.leadId === agentId && item.leadTurnId === turnId);
+      if (!targets.length) {
+        const latest = this.getDelegationByLead(agentId);
+        if (latest) targets = [latest];
+      }
+      for (const item of targets) item.costLead = (item.costLead ?? 0) + validCost / targets.length;
+    }
+    this.flush();
+    return true;
+  }
+  armTimer(id: string, callback: () => void | Promise<void>): void {
+    this.clearTimer(id);
+    const item = this.getDelegation(id);
+    if (!item || !isActive(item.status)) return;
+    const timer = setTimeout(() => {
+      this.timers.delete(id);
+      void Promise.resolve().then(callback).catch((error) => console.error("[fusion] Timeout failed", error));
+    }, Math.max(0, Math.min(2_147_483_647, item.timeoutAt - this.now())));
+    timer.unref?.();
+    this.timers.set(id, timer);
+  }
+  clearTimer(id: string): void {
+    const timer = this.timers.get(id);
+    if (timer) clearTimeout(timer);
+    this.timers.delete(id);
+  }
+  view(item: DelegationState): DelegationView {
+    return {
+      id: item.briefId, workspaceId: item.workspaceId, leadId: item.leadId,
+      sidekickId: item.sidekickId, profileId: item.profileId, sidekickModel: item.sidekickModel,
+      brief: item.brief, status: item.status, dispatchedAt: item.dispatchedAt,
+      completedAt: item.completedAt, timeoutAt: item.timeoutAt, report: item.report,
+      reportDelivered: item.reportDeliveredAt !== null, error: item.error,
+      costLead: item.costLead, costSidekick: item.costSidekick,
+    };
+  }
+  workspace(input: { workspaceId: string; offset: number; limit: number; search: string; activeOnly: boolean }) {
+    const all = this.getDelegations().filter((item) => item.workspaceId === input.workspaceId);
+    const search = input.search.trim().toLocaleLowerCase();
+    const filtered = all.filter((item) => (!input.activeOnly || isActive(item.status)) &&
+      (!search || [item.brief.goal, item.report?.summary, item.sidekickModel, item.profileId].some((value) => value?.toLocaleLowerCase().includes(search))))
+      .sort((a, b) => b.dispatchedAt - a.dispatchedAt);
+    return {
+      delegations: filtered.slice(input.offset, input.offset + input.limit).map((item) => this.view(item)),
+      total: filtered.length, active: all.filter((item) => isActive(item.status)).length,
+      costLead: all.reduce((sum, item) => sum + (item.costLead ?? 0), 0),
+      costSidekick: all.reduce((sum, item) => sum + (item.costSidekick ?? 0), 0),
+      missingCost: all.some((item) => item.costLead === null || item.costSidekick === null),
+    };
+  }
+  prune(days: number): void {
+    const cutoff = this.now() - days * 86_400_000;
+    for (const [id, item] of this.delegations) {
+      if (item.completedAt !== null && item.completedAt < cutoff && (!item.report || item.reportDeliveredAt !== null)) {
+        this.clearTimer(id); this.delegations.delete(id);
       }
     }
-    return null;
+    for (const [id, item] of this.sidekicks) if (item.status !== "running" && item.lastUsedAt < cutoff) this.sidekicks.delete(id);
+    for (const [key, at] of this.usageTurns) if (at < cutoff) this.usageTurns.delete(key);
+    this.flush();
   }
-
-  /** Mark a sidekick as running. */
-  setSidekickRunning(sidekickId: string): void {
-    const state = this.sidekicks.get(sidekickId);
-    if (state) {
-      state.status = "running";
-      state.lastUsedAt = this.now();
-    }
-  }
-
-  setSidekickBriefId(sidekickId: string, briefId: string): void {
-    const state = this.sidekicks.get(sidekickId);
-    if (state) state.briefId = briefId;
-  }
-
-  /** Mark a sidekick as idle (available for reuse). */
-  setSidekickIdle(sidekickId: string): void {
-    const state = this.sidekicks.get(sidekickId);
-    if (state) {
-      state.status = "idle";
-      state.lastUsedAt = this.now();
-    }
-  }
-
-  /** Mark a sidekick as failed (should not be reused). */
-  setSidekickFailed(sidekickId: string): void {
-    const state = this.sidekicks.get(sidekickId);
-    if (state) {
-      state.status = "failed";
-    }
-  }
-
-  /** Increment sidekick turn count. */
-  incrementSidekickTurns(sidekickId: string): void {
-    const state = this.sidekicks.get(sidekickId);
-    if (state) {
-      state.turnCount++;
-    }
-  }
-
-  /** Add cost to sidekick. */
-  addSidekickCost(sidekickId: string, cost: number): void {
-    const state = this.sidekicks.get(sidekickId);
-    if (state) {
-      state.totalCost += cost;
-    }
-  }
-
-  /** Check if sidekick has exceeded max turns. */
-  hasExceededMaxTurns(sidekickId: string, maxTurns: number): boolean {
-    const state = this.sidekicks.get(sidekickId);
-    return state ? state.turnCount >= maxTurns : false;
-  }
-
-  /** Check if sidekick has exceeded max cost. */
-  hasExceededMaxCost(sidekickId: string, maxCost: number): boolean {
-    const state = this.sidekicks.get(sidekickId);
-    return state ? state.totalCost >= maxCost : false;
-  }
-
-  /** Record a new delegation. */
-  recordDelegation(delegation: DelegationState): void {
-    this.delegations.set(delegation.briefId, delegation);
-  }
-
-  /** Update delegation status. */
-  updateDelegationStatus(briefId: string, status: DelegationState["status"]): void {
-    const delegation = this.delegations.get(briefId);
-    if (delegation) {
-      delegation.status = status;
-      if (status === "completed" || status === "blocked" || status === "failed" || status === "timeout") {
-        delegation.completedAt = this.now();
-      }
-    }
-  }
-
-  /** Set a timeout for a delegation. */
-  setDelegationTimeout(briefId: string, timeoutMs: number, callback: () => void): void {
-    const delegation = this.delegations.get(briefId);
-    if (delegation) {
-      delegation.timeoutAt = this.now() + timeoutMs;
-      const timer = setTimeout(() => {
-        this.clearDelegationTimeout(briefId);
-        callback();
-      }, timeoutMs);
-      this.timeoutTimers.set(briefId, timer);
-    }
-  }
-
-  /** Clear a delegation timeout. */
-  clearDelegationTimeout(briefId: string): void {
-    const timer = this.timeoutTimers.get(briefId);
-    if (timer) {
-      clearTimeout(timer);
-      this.timeoutTimers.delete(briefId);
-    }
-  }
-
-  /** Get delegation by brief ID. */
-  getDelegation(briefId: string): DelegationState | null {
-    return this.delegations.get(briefId) ?? null;
-  }
-
-  /** Get delegation by lead agent ID (for reconciliation on crash). */
-  getDelegationByLead(leadId: string): DelegationState | null {
-    let latest: DelegationState | null = null;
-    for (const delegation of this.delegations.values()) {
-      if (delegation.leadId === leadId && (!latest || delegation.dispatchedAt > latest.dispatchedAt)) {
-        latest = delegation;
-      }
-    }
-    return latest;
-  }
-
-  /** Get sidekick state. */
-  getSidekick(sidekickId: string): SidekickState | null {
-    return this.sidekicks.get(sidekickId) ?? null;
-  }
-
-  /** Clean up old delegations (older than 7 days). */
-  cleanupOldDelegations(): void {
-    const cutoff = this.now() - 7 * 24 * 60 * 60 * 1000;
-    for (const [briefId, delegation] of this.delegations) {
-      if (delegation.completedAt && delegation.completedAt < cutoff) {
-        this.clearDelegationTimeout(briefId);
-        this.delegations.delete(briefId);
-      }
-    }
-  }
-
-  /** Clean up old idle sidekicks (older than 7 days). */
-  cleanupOldSidekicks(): void {
-    const cutoff = this.now() - 7 * 24 * 60 * 60 * 1000;
-    for (const [sidekickId, state] of this.sidekicks) {
-      if (state.status === "idle" && state.lastUsedAt < cutoff) {
-        this.sidekicks.delete(sidekickId);
-      }
-    }
-  }
-
-  /** Clear all state (called on settings change). */
-  clear(): void {
-    // Clear all timeout timers
-    for (const [briefId, timer] of this.timeoutTimers) {
-      clearTimeout(timer);
-    }
-    this.timeoutTimers.clear();
-    this.sidekicks.clear();
-    this.delegations.clear();
+  dispose(): void {
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    this.flush();
   }
 }

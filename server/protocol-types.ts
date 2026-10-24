@@ -1,6 +1,6 @@
 /**
- * Re-export Paseo API types from the SDK.
- * This is a placeholder; the actual types come from @getpaseo/plugin/server.
+ * Re-export Paseo API types from the client SDK. Server lifecycle hooks and RPC
+ * handlers receive this API through their context.
  */
 
-export type { PaseoApi } from "@getpaseo/plugin/server";
+export type { PaseoApi } from "@getpaseo/client";

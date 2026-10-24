@@ -1,9 +1,9 @@
-import type { PluginButtonContentProps, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
-import { Text, View } from "@getpaseo/plugin/client/ui";
-import { getDelegationRpc, getSettingsRpc } from "./shared/contracts";
+import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import { DelegationCardSchema, getDelegationRpc, getSettingsRpc } from "./shared/contracts";
 import { LABEL } from "./shared/labels";
 import type { FusionSettings } from "./shared/settings";
 import { DelegationTimelineCard } from "./client/timeline-card";
+import { FusionWorkspacePanel } from "./client/workspace-panel";
 
 type LeadAgent = { id: string; workspaceId?: string | null; labels: Record<string, string> };
 type PillEntry = { pill: PluginButtonRegistration; workspaceId: string };
@@ -15,24 +15,21 @@ type DelegationView = {
   dispatched_at: number;
 } | null;
 
-function FusionStatusPopover({ theme, layout }: PluginButtonContentProps) {
-  return (
-    <View style={{ width: layout.compact ? "100%" : 300, padding: 12, gap: 8 }}>
-      <Text style={{ color: theme.colors.foreground, fontSize: 14, fontWeight: "600" }}>Model Fusion</Text>
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-        This pill shows the lead’s latest sidekick delegation. Status refreshes every five seconds.
-      </Text>
-    </View>
-  );
-}
-
 export default function contribute(client: PluginClientContext) {
-  client.registerTimelineItemRenderer({
+  const removeRenderer = client.addTimelineRenderer({
     kind: "delegation",
     version: 1,
+    schema: DelegationCardSchema,
     Component: DelegationTimelineCard,
   });
 
+  const removePanel = client.addWorkspacePanel({
+    id: "fusion", title: "Model Fusion", icon: "GitBranch", context: "workspace", Component: FusionWorkspacePanel,
+  });
+  const removeCommand = client.addCommandCenterItem({
+    id: "open-fusion", title: "Open Model Fusion", icon: "GitBranch", context: "workspace",
+    onSelect({ openPanel }) { openPanel("fusion"); },
+  });
   const lifetime = new AbortController();
   const pills = new Map<string, PillEntry>();
   const leads = new Map<string, LeadAgent>();
@@ -55,9 +52,15 @@ export default function contribute(client: PluginClientContext) {
   };
 
   const refresh = async () => {
-    if (refreshing || lifetime.signal.aborted || !settings?.enabled || !settings.show_composer_pill) return;
+    if (refreshing || lifetime.signal.aborted) return;
     refreshing = true;
     try {
+      settings = await client.rpc(getSettingsRpc, {});
+      if (lifetime.signal.aborted) return;
+      if (!settings.enabled || !settings.show_composer_pill) {
+        for (const id of pills.keys()) removePill(id);
+        return;
+      }
       await Promise.all([...leads.values()].map(async (lead) => {
         if (!lead.workspaceId) return;
         try {
@@ -73,7 +76,7 @@ export default function contribute(client: PluginClientContext) {
                 id: "fusion-sidekick-state",
                 workspaceId: lead.workspaceId,
                 agentId: lead.id,
-                button: { ...next, icon: "GitBranch", behavior: { kind: "popover", Content: FusionStatusPopover } },
+                button: { ...next, icon: "GitBranch", behavior: { kind: "action", onPress() { client.openPanel("fusion", { workspaceId: lead.workspaceId! }); } } },
               }),
             });
           }
@@ -81,6 +84,8 @@ export default function contribute(client: PluginClientContext) {
           if (!lifetime.signal.aborted) console.error("[fusion] delegation status refresh failed", lead.id, error);
         }
       }));
+    } catch (error) {
+      if (!lifetime.signal.aborted) console.error("[fusion] settings refresh failed", error);
     } finally {
       refreshing = false;
     }
@@ -130,6 +135,7 @@ export default function contribute(client: PluginClientContext) {
 
   const timer = setInterval(() => void refresh(), 5_000);
   return () => {
+    removeRenderer(); removePanel(); removeCommand();
     clearInterval(timer);
     lifetime.abort();
     for (const id of pills.keys()) removePill(id);

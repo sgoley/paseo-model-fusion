@@ -1,87 +1,59 @@
-import type { FusionSettings, Profile } from "../shared/settings";
-import { LABEL } from "../shared/labels";
+import { BriefSchema, ReportSchema, type Brief, type Report } from "../shared/models";
+import type { Profile } from "../shared/settings";
 
-interface FencedBrief {
-  goal: string;
-  constraints?: string;
-  success_criteria?: string;
-  files_hint?: string[];
-}
-
-const log = (...args: unknown[]) => console.log("[fusion-fenced]", ...args);
-
-/**
- * Parse a fenced brief block from the lead's final message.
- * Format:
- * ```fusion-brief
- * goal: ...
- * constraints: ...
- * success_criteria: ...
- * files_hint: file1, file2, ...
- * ```
- */
-export function parseFencedBrief(text: string): FencedBrief | null {
-  const briefMatch = text.match(/```fusion-brief\n([\s\S]*?)\n```/);
-  if (!briefMatch) {
-    return null;
-  }
-
-  const briefText = briefMatch[1];
-  const lines = briefText.split("\n");
-
-  const brief: FencedBrief = {
-    goal: "",
-    constraints: undefined,
-    success_criteria: undefined,
-    files_hint: undefined,
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith("goal:")) {
-      brief.goal = trimmed.slice(5).trim();
-    } else if (trimmed.startsWith("constraints:")) {
-      brief.constraints = trimmed.slice(12).trim();
-    } else if (trimmed.startsWith("success_criteria:")) {
-      brief.success_criteria = trimmed.slice(17).trim();
-    } else if (trimmed.startsWith("files_hint:")) {
-      const filesStr = trimmed.slice(11).trim();
-      brief.files_hint = filesStr.split(",").map((f) => f.trim()).filter((f) => f);
+/** Parse a deliberately small field/list format, or JSON. This is not a YAML evaluator. */
+function block(text: string, tag: string): Record<string, unknown> | null {
+  const matches = [...text.replace(/\r\n/g, "\n").matchAll(new RegExp("```" + tag + "[ \\t]*\\n([\\s\\S]*?)\\n```", "g"))];
+  const body = matches.at(-1)?.[1];
+  if (!body) return null;
+  try {
+    const json: unknown = JSON.parse(body);
+    if (json && typeof json === "object" && !Array.isArray(json)) return json as Record<string, unknown>;
+  } catch { /* Continue with the field/list format. */ }
+  const fields: Record<string, unknown> = {};
+  let key = "";
+  for (const line of body.split("\n")) {
+    const match = line.match(/^([a-z_]+):[ \t]*(.*)$/);
+    if (match) {
+      key = match[1];
+      const value = match[2].trim();
+      fields[key] = value === "|" || value === ">" ? "" : value;
+      if (/^[\["]/.test(value) || value === "null") {
+        try { fields[key] = JSON.parse(value); } catch { /* Keep plain text. */ }
+      }
+    } else if (key && line.trim().startsWith("- ")) {
+      const current = fields[key];
+      const list = Array.isArray(current) ? current : typeof current === "string" && current.trim() ? [current] : [];
+      list.push(line.trim().slice(2));
+      fields[key] = list;
+    } else if (key && line.trim()) {
+      const current = fields[key];
+      if (typeof current === "string") fields[key] = current + "\n" + line.trim();
     }
   }
-
-  // Validate that we have at least a goal
-  if (!brief.goal) {
-    log("Fenced brief missing goal");
-    return null;
+  return fields;
+}
+export function parseFencedBrief(text: string): Brief | null {
+  const fields = block(text, "fusion-brief");
+  if (!fields) return null;
+  if (typeof fields.files_hint === "string") fields.files_hint = fields.files_hint.split(",").map((s) => s.trim()).filter(Boolean);
+  const parsed = BriefSchema.safeParse(fields);
+  return parsed.success ? parsed.data : null;
+}
+export function parseFencedReport(text: string): { delegationId: string; reportToken: string; report: Report } | null {
+  const fields = block(text, "report");
+  if (!fields || typeof fields.delegation_id !== "string" || typeof fields.report_token !== "string") return null;
+  for (const key of ["changes", "tests", "concerns"]) {
+    if (typeof fields[key] === "string") fields[key] = fields[key] === "" ? [] : [fields[key]];
   }
-
-  log("Parsed fenced brief", brief);
-  return brief;
+  if (Array.isArray(fields.suggested_next)) fields.suggested_next = fields.suggested_next.join("\n");
+  if (fields.suggested_next === "") fields.suggested_next = null;
+  const parsed = ReportSchema.safeParse(fields);
+  return parsed.success ? { delegationId: fields.delegation_id, reportToken: fields.report_token, report: parsed.data } : null;
 }
-
-/**
- * Check if the lead's message contains a fenced brief.
- */
-export function hasFencedBrief(text: string): boolean {
-  return /```fusion-brief\n/.test(text);
-}
-
-/**
- * Generate a prompt for the lead to use the fenced-text protocol.
- */
-export function getFencedBriefPrompt(profile: Profile): string {
-  let prompt = "To delegate to your sidekick, end your turn with a fenced brief block:\n\n";
-  prompt += "```fusion-brief\n";
-  prompt += "goal: <what you want the sidekick to do>\n";
-  prompt += "constraints: <any constraints or boundaries>\n";
-  prompt += "success_criteria: <how to know when the work is done>\n";
-  prompt += "files_hint: <file1, file2, ...>\n";
-  prompt += "```\n\n";
-
-  prompt += "The sidekick will then explore, implement, and test, then report back.\n";
-  prompt += "When you receive the report, you can accept, send feedback, or take over.\n";
-
-  return prompt;
+export const hasFencedBrief = (text: string) => parseFencedBrief(text) !== null;
+export function getFencedBriefPrompt(_profile?: Profile): string {
+  return "To delegate, end your turn with a fenced block:\n\n" +
+    "```fusion-brief\ngoal: <task>\nconstraints: <boundaries>\nsuccess_criteria: <expected outcome>\nfiles_hint: <comma-separated files>\n```\n\n" +
+    "Wait for the sidekick report before reviewing the result. Do not repeat the same brief after receiving its report.";
 }

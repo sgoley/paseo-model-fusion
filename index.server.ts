@@ -1,287 +1,203 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { PaseoApi } from "./server/protocol-types";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { fusionSettings, DEFAULT_SETTINGS, type FusionSettings, type Profile } from "./shared/settings";
-import { delegateRpc, reportRpc, getSettingsRpc, getDelegationRpc } from "./shared/contracts";
+import { fusionSettings, DEFAULT_SETTINGS, BUILTIN_PROFILES, type FusionSettings } from "./shared/settings";
+import { delegateRpc, reportRpc, getSettingsRpc, getDelegationRpc, getWorkspaceRpc, createLeadRpc, delegationActionRpc } from "./shared/contracts";
 import { FusionState } from "./server/state";
-import { handleDelegation, handleSidekickTurnEnded } from "./server/orchestration";
+import { handleDelegation, handleSidekickReport, handleSidekickTurnEnded, recoverDelegations, publishDelegation, deliverReport, finishDelegation, checkProvider, modelConfig, markFinished, usesMcp, mcpToolPolicy } from "./server/orchestration";
 import { LABEL, isSidekick, isLead } from "./shared/labels";
 import { FusionMcpHttpServer } from "./server/mcp-server";
-import { parseFencedBrief, getFencedBriefPrompt } from "./server/fenced";
+import { getFencedBriefPrompt, parseFencedBrief } from "./server/fenced";
+import { latestAssistantText, isMcpProviderRejection, timelineItem } from "./server/timeline";
 
-const MCP_PORT = 31337;
-
+const MCP_PORT = Number(process.env.PASEO_MODEL_FUSION_PORT || 31337);
+const MCP_URL = "http://127.0.0.1:" + MCP_PORT + "/mcp";
+function withPresets(values: FusionSettings): FusionSettings {
+  return { ...values, profiles: [...new Map([...BUILTIN_PROFILES, ...values.profiles].map((profile) => [profile.id, profile])).values()] };
+}
 export default function contribute(server: PluginServerContext) {
   const settingsHandle = server.registerSettings(fusionSettings);
-  const state = new FusionState();
-  let settings: FusionSettings = DEFAULT_SETTINGS;
+  const state = new FusionState({ filePath: process.env.PASEO_MODEL_FUSION_STATE_PATH ||
+    join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "plugin-data", "paseo-model-fusion", "state.json") });
+  let settings = DEFAULT_SETTINGS;
+  let paseoApi: PaseoApi | null = null;
   let stopped = false;
-  const fencedPromptedAgents = new Set<string>();
-
-  // Start MCP server
+  let recovery: Promise<void> | null = null;
+  const prompted = new Set<string>();
+  const settingsReady = settingsHandle.read().then((current) => {
+    if (current.status !== "ready") throw new Error("Invalid Fusion settings: " + current.error);
+    settings = withPresets(current.values);
+  });
+  const unsubscribeSettings = settingsHandle.subscribe((next) => {
+    if (next.status === "ready") settings = withPresets(next.values);
+  });
+  function capture(paseo: PaseoApi) {
+    paseoApi = paseo;
+    if (!recovery) {
+      recovery = settingsReady.then(() => recoverDelegations(paseo, settings, state));
+      void recovery.catch((error) => { console.error("[fusion] Recovery failed", error); recovery = null; });
+    }
+  }
+  async function ready(paseo: PaseoApi) {
+    capture(paseo); await settingsReady; await recovery;
+    if (stopped) throw new Error("Fusion is stopping");
+  }
   const mcpServer = new FusionMcpHttpServer(MCP_PORT);
-  const mcpUrl = `http://localhost:${MCP_PORT}/mcp`;
-
-  // Map from agent ID to lead ID for MCP calls
-  const agentToLead = new Map<string, string>();
-
-  void settingsHandle.read().then((current) => {
-    if (current.status === "ready") {
-      settings = current.values;
-    } else {
-      console.error("[fusion] settings invalid, using defaults:", current.error);
-    }
-  });
-
-  const unsubscribe = settingsHandle.subscribe((next) => {
-    if (next.status === "ready") {
-      settings = next.values;
-      state.clear();
-    }
-  });
-
-  // Start MCP server
-  mcpServer.start().catch((error) => {
-    console.error("[fusion] Failed to start MCP server:", error);
-  });
-
-  // Wire up MCP handlers
-  mcpServer.setDelegateHandler(async (params, agentId) => {
-    const leadId = agentToLead.get(agentId) || agentId;
-    const leadAgent = await server.paseo.agents.ref(leadId).refresh().catch(() => null);
-    if (!leadAgent) {
-      return { sidekickId: null, error: "Lead agent not found" };
-    }
-
-    const profileId = leadAgent.agent.labels[LABEL.fusionProfile];
-    if (!profileId) {
-      return { sidekickId: null, error: "Lead has no fusion profile" };
-    }
-
-    const profile = settings.profiles.find((p) => p.id === profileId);
-    if (!profile) {
-      return { sidekickId: null, error: "Profile not found" };
-    }
-
-    const result = await handleDelegation(server.paseo, settings, state, {
-      leadId,
-      leadProvider: leadAgent.agent.provider,
-      leadCwd: leadAgent.agent.cwd,
-      profile,
-      brief: params,
+  void settingsReady.then(() => {
+    if (stopped) return;
+    for (const item of state.getDelegations()) state.armTimer(item.briefId, () => {
+      if (paseoApi) return finishDelegation(paseoApi, settings, state, item, "timeout", "The delegation deadline elapsed.");
+      markFinished(state, item, "timeout", "The delegation deadline elapsed while disconnected.");
     });
-
-    return result;
+    return mcpServer.start();
+  }).catch((error) => console.error("[fusion] Startup failed", error));
+  async function delegate(paseo: PaseoApi, callerId: string, explicitId: string | undefined, brief: Parameters<typeof handleDelegation>[3]["brief"]) {
+    await ready(paseo);
+    const lead = await resolveLeadAgent(paseo, callerId, explicitId);
+    const profile = settings.profiles.find((item) => item.id === (lead.labels[LABEL.fusionProfile] || settings.default_profile));
+    if (!profile || !lead.workspaceId) return { sidekickId: null, error: "The lead needs a workspace and Fusion profile" };
+    return handleDelegation(paseo, lead.labels["fusion.transport"] === "fenced" ? { ...settings, use_mcp_delegation: false } : settings, state, {
+      leadId: lead.id, workspaceId: lead.workspaceId, leadTurnId: lead.activeTurn?.turnId ?? null,
+      mcpUrl: MCP_URL, profile, brief,
+    });
+  }
+  mcpServer.setDelegateHandler(async (params, context) => {
+    if (!paseoApi) return { sidekickId: null, error: "Paseo is not ready yet" };
+    if (!settings.enabled || !settings.use_mcp_delegation) return { sidekickId: null, error: "MCP delegation is disabled" };
+    try { return await delegate(paseoApi, context.agentId, params.lead_agent_id, params); }
+    catch (error) { return { sidekickId: null, error: String(error) }; }
   });
-
-  mcpServer.setReportHandler(async (params, agentId) => {
-    const leadId = agentToLead.get(agentId);
-    if (!leadId) {
-      console.error("[fusion] Report from unknown agent", agentId);
-      return;
-    }
-
-    // TODO: Store the report and send it to the lead
-    console.log("[fusion] Report received from", agentId, "for lead", leadId, params);
+  mcpServer.setReportHandler(async (params, context) => {
+    if (!paseoApi) return false;
+    await ready(paseoApi);
+    return handleSidekickReport(paseoApi, settings, state, {
+      briefId: params.delegation_id, reportToken: params.report_token, callerAgentId: context.agentId,
+      report: { status: params.status, summary: params.summary, changes: params.changes || [], tests: params.tests || [],
+        concerns: params.concerns || [], suggested_next: params.suggested_next ?? null },
+    });
   });
-
-  // Inject MCP server for delegate/report tools when creating a lead agent
-  server.before("agent.create", ({ request }) => {
-    if (!settings.enabled || !settings.use_mcp_delegation) {
-      return request;
-    }
-
-    // Check if this is a lead agent (has fusion.role=lead in labels)
-    const isLeadAgent = request.labels?.[LABEL.fusionRole] === "lead";
-    if (!isLeadAgent) {
-      return request;
-    }
-
-    // Inject the fusion MCP server
-    return {
-      ...request,
-      config: {
-        ...request.config,
-        mcpServers: {
-          ...request.config.mcpServers,
-          fusion: {
-            type: "http",
-            url: mcpUrl,
-          },
-        },
-      },
-    };
-  });
-
-  // Track agent creation for lead→sidekick mapping
-  server.on("agent.created", async (event, { paseo }) => {
-    const { agent } = event;
-    if (isSidekick(agent.labels)) {
-      const leadId = agent.labels[LABEL.fusionLeadId];
-      if (leadId) {
-        agentToLead.set(agent.id, leadId);
+  const cleanups = [
+    server.before("agent.create", async ({ request }, { paseo }) => {
+      capture(paseo); await settingsReady;
+      if (!settings.enabled || !settings.use_mcp_delegation || request.config.internal ||
+        request.env?.PASEO_MODEL_FUSION_SIDEKICK === "1" || request.env?.PASEO_MODEL_FUSION_TEXT_ONLY === "1") return request;
+      return { ...request, config: { ...request.config, mcpServers: {
+        ...request.config.mcpServers, fusion: { type: "http", url: MCP_URL, alwaysLoad: true },
+      } } };
+    }),
+    server.on("agent.created", async (_event, { paseo }) => { capture(paseo); }),
+    server.on("agent.turn_started", async (event, { paseo }) => {
+      capture(paseo);
+      if (state.getSidekick(event.agent.id)) state.updateSidekick(event.agent.id, { turnId: event.turnId });
+    }),
+    server.on("agent.turn_ended", async (event, { paseo }) => {
+      if (stopped) return;
+      capture(paseo); await settingsReady;
+      const snapshot = await paseo.agents.ref(event.agent.id).refresh();
+      if (!snapshot) return;
+      const agent = snapshot.agent;
+      if (!isLead(agent.labels) && !isSidekick(agent.labels)) return;
+      const history = await paseo.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: 100 });
+      const timeline = history.entries;
+      const turnId = event.turnId || "timeline:" + history.epoch + ":" + history.entries.at(-1)?.seqEnd;
+      if (isLead(agent.labels)) {
+        if (settings.enabled && settings.fallback_to_fenced && event.outcome.kind !== "canceled") {
+          const brief = parseFencedBrief(latestAssistantText(timeline, event.turnId));
+          if (brief && !state.hasDelegationForTurn(agent.id, turnId)) {
+            const profile = settings.profiles.find((item) => item.id === (agent.labels[LABEL.fusionProfile] || settings.default_profile));
+            if (profile && agent.workspaceId) await handleDelegation(paseo, agent.labels["fusion.transport"] === "fenced" ? { ...settings, use_mcp_delegation: false } : settings, state, {
+              leadId: agent.id, workspaceId: agent.workspaceId, leadTurnId: turnId, mcpUrl: MCP_URL, profile, brief,
+            });
+          } else if (event.outcome.kind === "failed" && !prompted.has(agent.id) &&
+            isMcpProviderRejection(event.outcome.error.message, timeline) && agent.workspaceId) {
+            prompted.add(agent.id);
+            const profile = settings.profiles.find((item) => item.id === (agent.labels[LABEL.fusionProfile] || settings.default_profile));
+            if (profile) {
+              const context = timeline.map(timelineItem).map((item) => {
+                return (item.type === "user_message" || item.type === "assistant_message") && item.text ? item.type + ": " + item.text : "";
+              }).filter(Boolean).join("\n").slice(-24000);
+              await paseo.workspaces.ref(agent.workspaceId).agents.create({
+                config: modelConfig(profile.lead), env: { PASEO_MODEL_FUSION_TEXT_ONLY: "1" },
+                title: "Fusion lead: text fallback", labels: { ...agent.labels, "fusion.transport": "fenced", "fusion.replaces": agent.id },
+                prompt: "Continue using text delegation. The previous session rejected MCP.\n\n" + context + "\n\n" + getFencedBriefPrompt(profile),
+              });
+            }
+          }
+        }
+        state.recordUsage(agent.id, turnId, agent.lastUsage?.totalCostUsd ?? null, "lead");
+        const matching = state.getDelegations().filter((item) => item.leadId === agent.id && item.leadTurnId === turnId);
+        const latest = state.getDelegationByLead(agent.id);
+        for (const item of matching.length ? matching : latest ? [latest] : []) await publishDelegation(paseo, settings, item);
+      } else {
+        await handleSidekickTurnEnded(paseo, settings, state, {
+          agent: { id: agent.id }, timeline, turnId, cost: agent.lastUsage?.totalCostUsd ?? null, outcome: event.outcome,
+        });
       }
-    } else if (isLead(agent.labels)) {
-      // This is a lead agent, map it to itself
-      agentToLead.set(agent.id, agent.id);
-    }
-  });
-
-  // Handle lead turn ended for fenced delegation fallback and MCP rejection recovery.
-  server.on("agent.turn_ended", async (event, { paseo }) => {
-    if (stopped || !settings.enabled || !settings.fallback_to_fenced || !isLead(event.agent.labels)) return;
-
-    const profileId = event.agent.labels[LABEL.fusionProfile] || settings.default_profile;
-    const profile = settings.profiles.find((item) => item.id === profileId);
-    if (!profile) return;
-
-    if (event.outcome.kind !== "failed") fencedPromptedAgents.delete(event.agent.id);
-    const assistantText = latestAssistantText(event.timeline);
-    const brief = parseFencedBrief(assistantText);
-    if (brief) {
-      fencedPromptedAgents.delete(event.agent.id);
-      void handleDelegation(paseo, settings, state, {
-        leadId: event.agent.id,
-        leadProvider: event.agent.provider,
-        leadCwd: event.agent.cwd,
-        profile,
-        brief,
-      }).then((result) => {
-        if (result.error) console.error("[fusion] fenced delegation failed", event.agent.id, result.error);
-      }).catch((error) => {
-        console.error("[fusion] fenced delegation crashed", event.agent.id, error);
-      });
-      return;
-    }
-
-    if (event.outcome.kind !== "failed" || fencedPromptedAgents.has(event.agent.id) || !isMcpProviderRejection(event)) return;
-    fencedPromptedAgents.add(event.agent.id);
+    }),
+  ];
+  server.handle(delegateRpc, async ({ leadAgentId, ...brief }, { paseo }) => {
     try {
-      await paseo.agents.ref(event.agent.id).send(
-        `The provider rejected or could not start the Fusion MCP tools. Continue using this text protocol instead.\n\n${getFencedBriefPrompt(profile)}`,
-      );
-      console.warn("[fusion] MCP rejected by provider; requested fenced-text fallback", event.agent.id);
-    } catch (error) {
-      fencedPromptedAgents.delete(event.agent.id);
-      console.error("[fusion] Could not request fenced-text fallback", event.agent.id, error);
-    }
+      const result = await delegate(paseo, "", leadAgentId, brief);
+      return { status: result.sidekickId ? "dispatched" as const : "error" as const, sidekick_agent_id: result.sidekickId, message: result.error || "Delegation dispatched" };
+    } catch (error) { return { status: "error" as const, sidekick_agent_id: null, message: String(error) }; }
   });
-
-  // Handle sidekick turn ended to extract reports
-  server.on("agent.turn_ended", async (event, { paseo }) => {
-    if (stopped || !settings.enabled) return;
-    if (event.outcome.kind === "canceled") return;
-
-    // Check if this is a sidekick
-    if (!isSidekick(event.agent.labels)) {
-      return;
-    }
-
-    // Detached: report handling can outlast the 30 s hook timeout
-    void handleSidekickTurnEnded(paseo, settings, state, event).catch((error) => {
-      console.error("[fusion] sidekick turn_ended handler crashed", event.agent.id, error);
-    });
-  });
-
-  // RPC handlers
-  server.handle(delegateRpc, async ({ goal, constraints, success_criteria, files_hint }, { paseo }) => {
-    if (!settings.enabled) {
-      return {
-        status: "error" as const,
-        sidekick_agent_id: null,
-        message: "Fusion is disabled in settings",
-      };
-    }
-
-    // This RPC is a fallback for when MCP is not available
-    // It's called from the lead agent directly
-    // We need to get the current agent ID from the context
-    // For now, return an error since we expect MCP to be used
-    return {
-      status: "error" as const,
-      sidekick_agent_id: null,
-      message: "Use the MCP delegate tool instead of this RPC",
-    };
-  });
-
   server.handle(reportRpc, async (input, { paseo }) => {
-    // This RPC is a fallback for when MCP is not available
-    return {
-      status: "error" as const,
-      message: "Use the MCP report tool instead of this RPC",
-    };
+    await ready(paseo);
+    const accepted = await handleSidekickReport(paseo, settings, state, { briefId: input.delegation_id, reportToken: input.report_token, report: input });
+    return { status: accepted ? "accepted" as const : "error" as const, message: accepted ? "Report stored for delivery" : "Report rejected" };
   });
-
-  server.handle(getSettingsRpc, async () => {
-    return settings;
+  server.handle(getSettingsRpc, async (_input, { paseo }) => { await ready(paseo); return settings; });
+  server.handle(getDelegationRpc, async ({ leadAgentId }, { paseo }) => {
+    await ready(paseo);
+    const item = state.getDelegationByLead(leadAgentId);
+    return { delegation: item ? { status: item.status, sidekick_agent_id: item.sidekickId, sidekick_model: item.sidekickModel, brief: item.brief.goal, dispatched_at: item.dispatchedAt } : null };
   });
-
-  server.handle(getDelegationRpc, async ({ leadAgentId }) => {
-    if (!settings.enabled) return { delegation: null };
-    const delegation = state.getDelegationByLead(leadAgentId);
-    if (!delegation) return { delegation: null };
-    const sidekick = delegation.sidekickId ? state.getSidekick(delegation.sidekickId) : null;
-    const profile = sidekick ? settings.profiles.find((item) => item.id === sidekick.profileId) : null;
-    return {
-      delegation: {
-        status: delegation.status,
-        sidekick_agent_id: delegation.sidekickId,
-        sidekick_model: profile ? `${profile.sidekick.provider}/${profile.sidekick.model || "default"}` : null,
-        brief: delegation.brief.goal,
-        dispatched_at: delegation.dispatchedAt,
-      },
-    };
-  });
-
-  // Periodic cleanup
-  const cleanupInterval = setInterval(() => {
-    state.cleanupOldDelegations();
-    state.cleanupOldSidekicks();
-  }, 60 * 60 * 1000); // Every hour
-
-  return () => {
-    stopped = true;
-    unsubscribe();
-    clearInterval(cleanupInterval);
-    fencedPromptedAgents.clear();
-    mcpServer.stop().catch((error) => {
-      console.error("[fusion] Failed to stop MCP server:", error);
+  server.handle(getWorkspaceRpc, async (input, { paseo }) => { await ready(paseo); return state.workspace(input); });
+  server.handle(createLeadRpc, async ({ workspaceId, profileId, prompt }, { paseo }) => {
+    await ready(paseo);
+    if (!settings.enabled) throw new Error("Fusion is disabled");
+    const profile = settings.profiles.find((item) => item.id === profileId);
+    if (!profile) throw new Error("Profile not found");
+    await checkProvider(paseo, profile.lead); await checkProvider(paseo, profile.sidekick);
+    const useMcp = usesMcp(profile.lead, profile, settings);
+    if ((!useMcp || !usesMcp(profile.sidekick, profile, settings)) && !settings.fallback_to_fenced) throw new Error("This pair requires fenced delegation; enable Fallback to fenced or choose MCP transport.");
+    const agent = await paseo.workspaces.ref(workspaceId).agents.create({
+      config: { ...modelConfig(profile.lead), ...(useMcp ? mcpToolPolicy(profile.lead, "delegate") : {}), ...(useMcp ? { mcpServers: { fusion: { type: "http" as const, url: MCP_URL, alwaysLoad: true } } } : {}) },
+      env: { PASEO_MODEL_FUSION_TEXT_ONLY: useMcp ? "0" : "1" }, title: "Fusion lead: " + profile.name,
+      labels: { [LABEL.fusionRole]: "lead", [LABEL.fusionProfile]: profile.id, "fusion.transport": useMcp ? "mcp" : "fenced" },
+      prompt: "You are the Fusion lead. Plan, delegate implementation, and review the sidekick report. " +
+        (useMcp ? "Use Fusion's delegate tool, then wait for its report. If unavailable, " : "") + getFencedBriefPrompt(profile) + "\n\nTask:\n" + prompt,
     });
+    return { agentId: agent.id };
+  });
+  server.handle(delegationActionRpc, async ({ workspaceId, delegationId, action }, { paseo }) => {
+    await ready(paseo);
+    const item = state.getDelegation(delegationId);
+    if (!item || item.workspaceId !== workspaceId) throw new Error("Delegation not found in this workspace");
+    if (action === "cancel" && item.status !== "dispatched" && item.status !== "running") return { ok: false, message: "Delegation already finished" };
+    if (action === "cancel") await finishDelegation(paseo, settings, state, item, "canceled", "Canceled from the Fusion workspace panel.");
+    else await deliverReport(paseo, state, item);
+    return { ok: true, message: action === "cancel" ? "Delegation canceled" : item.reportDeliveredAt !== null ? "Report delivered" : "Delivery is still pending" };
+  });
+  const maintenance = setInterval(() => {
+    if (stopped) return;
+    state.prune(settings.history_retention_days);
+    if (paseoApi) void recoverDelegations(paseoApi, settings, state).catch((error) => console.error("[fusion] Maintenance failed", error));
+  }, 60_000);
+  return async () => {
+    stopped = true; unsubscribeSettings(); cleanups.forEach((cleanup) => cleanup());
+    clearInterval(maintenance); state.dispose(); await mcpServer.stop();
   };
 }
-
-function latestAssistantText(timeline: readonly unknown[]): string {
-  let start = 0;
-  for (let index = timeline.length - 1; index >= 0; index--) {
-    const item = timeline[index] as { type?: string };
-    if (item.type === "user_message") {
-      start = index + 1;
-      break;
-    }
+async function resolveLeadAgent(paseo: PaseoApi, callerId: string, explicitId?: string) {
+  if (callerId || explicitId) {
+    const snapshot = await paseo.agents.ref(callerId || explicitId!).refresh();
+    if (!snapshot || !isLead(snapshot.agent.labels)) throw new Error("Only a labeled Fusion lead can delegate");
+    return snapshot.agent;
   }
-
-  const chunks: string[] = [];
-  for (let index = timeline.length - 1; index >= start; index--) {
-    const item = timeline[index] as { type?: string; text?: string; data?: { content?: string } };
-    if (item.type === "assistant_message" && typeof item.text === "string") chunks.unshift(item.text);
-    else if (item.type === "assistant" && typeof item.data?.content === "string") chunks.unshift(item.data.content);
-    else if (chunks.length > 0 && item.type !== "reasoning") break;
-  }
-  return chunks.join("").trim();
-}
-
-function isMcpProviderRejection(event: { outcome: { kind: string; error?: { code?: string; message?: string } }; timeline: readonly unknown[] }): boolean {
-  const evidence: string[] = [];
-  if (event.outcome.error) evidence.push(`${event.outcome.error.code || ""} ${event.outcome.error.message || ""}`);
-  let turnStart = 0;
-  for (let index = event.timeline.length - 1; index >= 0; index--) {
-    if ((event.timeline[index] as { type?: string }).type === "user_message") {
-      turnStart = index + 1;
-      break;
-    }
-  }
-  for (const raw of event.timeline.slice(turnStart)) {
-    const item = raw as { type?: string; message?: string };
-    if ((item.type === "error" || item.type === "notification") && item.message) evidence.push(item.message);
-  }
-  const text = evidence.join("\n");
-  return /(?:mcp|model context protocol|fusion).{0,120}(?:reject|unsupported|not supported|not available|failed|failure|invalid|connect|connection|start)|(?:reject|unsupported|not supported|not available|failed|failure|invalid|connect|connection|start).{0,120}(?:mcp|model context protocol|fusion)/is.test(text);
+  const agents = await paseo.agents.list();
+  const leads = agents.entries.filter(({ agent }) => agent.activeTurn && isLead(agent.labels));
+  if (leads.length !== 1) throw new Error("Pass lead_agent_id unless exactly one Fusion lead is active");
+  return leads[0].agent;
 }
