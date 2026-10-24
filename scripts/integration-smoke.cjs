@@ -9,6 +9,7 @@ const { latestAssistantText } = require('../server/timeline.ts');
 const pluginId = 'paseo-model-fusion';
 const pause = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 async function main() {
+  if (/antigravity|\bagy\b/i.test(process.argv[2] || "")) throw new Error("Antigravity checks are excluded. Use agy directly outside Fusion.");
   const { driver, api } = await connect();
   const agents = new Set();
   const results = [];
@@ -41,13 +42,13 @@ async function main() {
   }
   try {
     const settings = await rpc('get-settings', {});
-    assert(settings.profiles.some(p => p.id === 'codex-to-antigravity-flash'));
+    assert(settings.profiles.some(p => p.id === 'codex-to-cursor-grok'));
     const cwd = join(tmpdir(), 'paseo-model-fusion-integration', marker);
     mkdirSync(cwd, { recursive: true });
     const parent = await api.agents.create({ cwd, config: { provider: 'codex/gpt-6-luna' }, title: 'Fusion integration fixture', env: { PASEO_MODEL_FUSION_TEXT_ONLY: '1' }, labels: { 'fusion.role': 'probe' } });
     agents.add(parent.id); workspaceId = parent.workspaceId;
     assert(workspaceId);
-    for (const profileId of (process.argv[2] || 'codex-to-antigravity-flash,cursor-opus-to-codex-luna').split(',')) {
+    for (const profileId of (process.argv[2] || 'codex-to-cursor-grok,cursor-opus-to-codex-luna').split(',')) {
       const nonce = marker + '-' + profileId;
       console.log('Checking ' + profileId);
       const { agentId } = await rpc('create-lead', { workspaceId, profileId, prompt: task(nonce) });

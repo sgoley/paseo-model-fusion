@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isAntigravity, requireFusionProvider, ANTIGRAVITY_POLICY_MESSAGE } from "../shared/provider-policy";
 import type { PaseoApi } from "./protocol-types";
 import type { FusionSettings, Profile, ProviderModel } from "../shared/settings";
 import { BriefSchema, ReportSchema, isActive, type Brief, type Report } from "../shared/models";
@@ -11,6 +12,7 @@ import { latestAssistantText } from "./timeline";
 const dispatches = new Map<string, Promise<unknown>>();
 const deliveries = new Map<string, Promise<void>>();
 export function modelConfig(model: ProviderModel) {
+  requireFusionProvider(model);
   return {
     provider: model.provider + (model.model ? "/" + model.model : ""),
     ...(model.modeId ? { modeId: model.modeId } : {}),
@@ -26,6 +28,7 @@ export function mcpToolPolicy(model: ProviderModel, tool: string) {
     ? { toolPolicy: { preapproved: [{ kind: "mcp" as const, server: "fusion", tool }] } } : {};
 }
 export async function checkProvider(paseo: PaseoApi, model: ProviderModel): Promise<void> {
+  requireFusionProvider(model);
   const available = await paseo.providers.listAvailable();
   const provider = available.providers.find((item) => item.provider === model.provider);
   if (!provider || !provider.available) throw new Error("Provider is unavailable: " + model.provider);
@@ -63,6 +66,8 @@ export async function deliverReport(paseo: PaseoApi, state: FusionState, item: D
   if (existing) return existing;
   const pending = (async () => {
     try {
+      const lead = await paseo.agents.ref(item.leadId).refresh();
+      if (lead) requireFusionProvider({ provider: lead.agent.provider, model: lead.agent.model });
       const report = item.report!;
       const message = [
         "## Sidekick report [" + item.briefId + "]",
@@ -118,6 +123,7 @@ export async function handleDelegation(
     if (!settings.enabled) return { sidekickId: null, error: "Fusion is disabled" };
     const brief = BriefSchema.parse(request.brief);
     const profile = request.profile;
+    if (isAntigravity(profile.lead) || isAntigravity(profile.sidekick)) return { sidekickId: null, error: ANTIGRAVITY_POLICY_MESSAGE };
     if (!usesMcp(profile.sidekick, profile, settings) && !settings.fallback_to_fenced) return { sidekickId: null, error: "This sidekick requires fenced delegation; enable Fallback to fenced or choose MCP transport." };
     if (profile.max_cost <= 0) return { sidekickId: null, error: "The sidekick cost budget is zero" };
     const signature = JSON.stringify(profile);
@@ -221,6 +227,10 @@ export async function handleSidekickTurnEnded(
 export async function recoverDelegations(paseo: PaseoApi, settings: FusionSettings, state: FusionState): Promise<void> {
   for (const item of state.getDelegations()) {
     try {
+      if (isActive(item.status) && isAntigravity({ provider: item.sidekickModel })) {
+        await finishDelegation(paseo, settings, state, item, "canceled", ANTIGRAVITY_POLICY_MESSAGE);
+        continue;
+      }
       if (isActive(item.status)) {
         if (dispatches.has(item.leadId) && item.status === "dispatched") continue;
         if (!item.sidekickId) {

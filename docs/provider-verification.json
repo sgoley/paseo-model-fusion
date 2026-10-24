@@ -8,7 +8,10 @@
       "model": "gemini-3.8-flash-low",
       "mcp": "unsupported",
       "mcpReason": "Authenticated session completed, but the current Antigravity adapter did not expose the per-session Fusion MCP tools.",
-      "fenced": "passed"
+      "fenced": "passed",
+      "historicalOnly": true,
+      "currentSupport": "excluded",
+      "reason": "Support withdrawn after checking Google consumer-plan FAQ. Earlier successful CLI probes are not authorization for coding-agent wrappers."
     },
     {
       "provider": "codex",
@@ -45,5 +48,7 @@
       "fenced": "unavailable",
       "reason": "Native Claude CLI target is not installed or authenticated on a1mini."
     }
-  ]
+  ],
+  "policyReviewedAt": "2026-10-24T15:20:02.868562+00:00",
+  "policySource": "https://www.antigravity.google/docs/faq/"
 }

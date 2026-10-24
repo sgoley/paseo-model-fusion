@@ -25,8 +25,8 @@ const records = Array.from({ length: 32 }, (_, index) => ({
 if (listing) {
   const active = records[0];
   const completed = records[3];
-  active.profileId = "codex-to-antigravity-flash";
-  active.sidekickModel = "antigravity/gemini-3.8-flash-low";
+  active.profileId = "codex-to-cursor-grok";
+  active.sidekickModel = "cursor/grok-4.7";
   completed.profileId = "cursor-opus-to-codex-luna";
   completed.brief.goal = "Review the delegation recovery implementation";
   completed.report!.summary = "Restored delegation history and report delivery after a plugin reload.";

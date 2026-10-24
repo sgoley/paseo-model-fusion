@@ -6,6 +6,7 @@ import { fusionSettings, DEFAULT_SETTINGS, BUILTIN_PROFILES, type FusionSettings
 import { delegateRpc, reportRpc, getSettingsRpc, getDelegationRpc, getWorkspaceRpc, createLeadRpc, delegationActionRpc } from "./shared/contracts";
 import { FusionState } from "./server/state";
 import { handleDelegation, handleSidekickReport, handleSidekickTurnEnded, recoverDelegations, publishDelegation, deliverReport, finishDelegation, checkProvider, modelConfig, markFinished, usesMcp, mcpToolPolicy } from "./server/orchestration";
+import { isAntigravity, requireFusionProvider, RETIRED_PROFILE_IDS } from "./shared/provider-policy";
 import { LABEL, isSidekick, isLead } from "./shared/labels";
 import { FusionMcpHttpServer } from "./server/mcp-server";
 import { getFencedBriefPrompt, parseFencedBrief } from "./server/fenced";
@@ -14,7 +15,9 @@ import { latestAssistantText, isMcpProviderRejection, timelineItem } from "./ser
 const MCP_PORT = Number(process.env.PASEO_MODEL_FUSION_PORT || 31337);
 const MCP_URL = "http://127.0.0.1:" + MCP_PORT + "/mcp";
 function withPresets(values: FusionSettings): FusionSettings {
-  return { ...values, profiles: [...new Map([...BUILTIN_PROFILES, ...values.profiles].map((profile) => [profile.id, profile])).values()] };
+  const allowed = values.profiles.filter((profile) => !isAntigravity(profile.lead) && !isAntigravity(profile.sidekick));
+  const profiles = [...new Map([...BUILTIN_PROFILES, ...allowed].map((profile) => [profile.id, profile])).values()];
+  return { ...values, profiles, default_profile: !RETIRED_PROFILE_IDS.includes(values.default_profile) && profiles.some((profile) => profile.id === values.default_profile) ? values.default_profile : DEFAULT_SETTINGS.default_profile };
 }
 export default function contribute(server: PluginServerContext) {
   const settingsHandle = server.registerSettings(fusionSettings);
@@ -55,6 +58,7 @@ export default function contribute(server: PluginServerContext) {
   async function delegate(paseo: PaseoApi, callerId: string, explicitId: string | undefined, brief: Parameters<typeof handleDelegation>[3]["brief"]) {
     await ready(paseo);
     const lead = await resolveLeadAgent(paseo, callerId, explicitId);
+    requireFusionProvider({ provider: lead.provider, model: lead.model });
     const profile = settings.profiles.find((item) => item.id === (lead.labels[LABEL.fusionProfile] || settings.default_profile));
     if (!profile || !lead.workspaceId) return { sidekickId: null, error: "The lead needs a workspace and Fusion profile" };
     return handleDelegation(paseo, lead.labels["fusion.transport"] === "fenced" ? { ...settings, use_mcp_delegation: false } : settings, state, {
@@ -80,7 +84,7 @@ export default function contribute(server: PluginServerContext) {
   const cleanups = [
     server.before("agent.create", async ({ request }, { paseo }) => {
       capture(paseo); await settingsReady;
-      if (!settings.enabled || !settings.use_mcp_delegation || request.config.internal ||
+      if (!settings.enabled || !settings.use_mcp_delegation || request.config.internal || isAntigravity({ provider: request.config.provider, model: request.config.model }) ||
         request.env?.PASEO_MODEL_FUSION_SIDEKICK === "1" || request.env?.PASEO_MODEL_FUSION_TEXT_ONLY === "1") return request;
       return { ...request, config: { ...request.config, mcpServers: {
         ...request.config.mcpServers, fusion: { type: "http", url: MCP_URL, alwaysLoad: true },
@@ -97,7 +101,7 @@ export default function contribute(server: PluginServerContext) {
       const snapshot = await paseo.agents.ref(event.agent.id).refresh();
       if (!snapshot) return;
       const agent = snapshot.agent;
-      if (!isLead(agent.labels) && !isSidekick(agent.labels)) return;
+      if ((!isLead(agent.labels) && !isSidekick(agent.labels)) || isAntigravity({ provider: agent.provider, model: agent.model })) return;
       const history = await paseo.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: 100 });
       const timeline = history.entries;
       const turnId = event.turnId || "timeline:" + history.epoch + ":" + history.entries.at(-1)?.seqEnd;

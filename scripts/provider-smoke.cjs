@@ -9,6 +9,7 @@ const { parseFencedBrief, parseFencedReport } = require("../server/fenced.ts");
 const { latestAssistantText } = require("../server/timeline.ts");
 
 async function main() {
+  if (process.argv[2]?.split(",").some((provider) => /antigravity|^agy$/i.test(provider))) throw new Error("Antigravity checks are excluded. Use agy directly outside Fusion.");
   const { driver, api } = await connect();
   const server = new FusionMcpHttpServer(0);
   const calls = new Map();
@@ -36,7 +37,7 @@ async function main() {
     agents.push(parent);
     const pairs = [
       ["codex", "gpt-6-luna"], ["omp", "cursor/gemini-3.8-flash"],
-      ["devin", "swe-1-6-slow"], ["cursor", "grok-4.7"], ["antigravity", "gemini-3.8-flash-low"], ["claude", null],
+      ["devin", "swe-1-6-slow"], ["cursor", "grok-4.7"], ["claude", null],
     ];
     for (const [provider, model] of pairs) {
       if (process.argv[2] && !process.argv[2].split(",").includes(provider)) continue;
@@ -47,11 +48,6 @@ async function main() {
       }
       const result = { ...(previous.find((item) => item.provider === provider) || {}), provider, model };
       for (const transport of process.argv[3] ? [process.argv[3]] : ["mcp", "fenced"]) {
-        if (provider === "antigravity" && transport === "mcp") {
-          result.mcp = "unsupported";
-          result.mcpReason = "The current AGY adapter does not expose per-session Fusion MCP tools; use fenced transport.";
-          continue;
-        }
         console.log(provider + ": checking " + transport);
         result[transport] = "failed";
         const nonce = "fusion-probe-" + randomUUID();

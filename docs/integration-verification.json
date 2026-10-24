@@ -1,19 +1,13 @@
 {
-  "verifiedAt": "2026-10-24T14:39:53.841Z",
+  "verifiedAt": "2026-10-24T15:24:39.472Z",
   "paseoVersion": "0.13.0-beta.1",
   "results": [
     {
-      "profileId": "codex-to-antigravity-flash",
+      "profileId": "codex-to-cursor-grok",
       "status": "completed",
       "reportDelivered": true,
       "leadReview": true,
       "reusedSidekick": true
-    },
-    {
-      "profileId": "cursor-opus-to-codex-luna",
-      "status": "completed",
-      "reportDelivered": true,
-      "leadReview": true
     }
   ],
   "reloadPreservedHistory": true,

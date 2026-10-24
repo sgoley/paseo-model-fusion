@@ -1,0 +1,24 @@
+{
+  "verifiedAt": "2026-10-24T14:39:53.841Z",
+  "paseoVersion": "0.13.0-beta.1",
+  "results": [
+    {
+      "profileId": "codex-to-antigravity-flash",
+      "status": "completed",
+      "reportDelivered": true,
+      "leadReview": true,
+      "reusedSidekick": true,
+      "historicalOnly": true,
+      "currentSupport": "withdrawn"
+    },
+    {
+      "profileId": "cursor-opus-to-codex-luna",
+      "status": "completed",
+      "reportDelivered": true,
+      "leadReview": true
+    }
+  ],
+  "reloadPreservedHistory": true,
+  "workspaceIsolation": true,
+  "redactedViews": true
+}

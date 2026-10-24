@@ -26,25 +26,24 @@ The workspace panel shows active work and searchable, paginated history. Expand 
 
 ## Model pairs and effort
 
-The first pair is the default for fresh settings. Existing saved defaults and customized profiles are preserved. The new-lead form shows each side's model and effort before starting.
+The first pair is the default for fresh settings. Existing supported defaults and customized profiles are preserved; retired Antigravity defaults switch to Cursor Grok. The new-lead form shows each side's model and effort before starting.
 
 | Profile ID | Lead | Sidekick | Effort: lead / sidekick |
 | --- | --- | --- | --- |
-| `codex-to-antigravity-flash` | Codex GPT-6.1 Sol | Antigravity Gemini 3.8 Flash | **High / Low** |
+| `codex-to-cursor-grok` | Codex GPT-6.1 Sol | Cursor Grok 4.7 | **High / Medium** |
 | `cursor-opus-to-codex-luna` | Cursor Claude Opus 5.5 | Codex GPT-6 Luna | **High / Medium** |
 | `codex-to-omp-flash` | Codex GPT-6.1 Sol | OMP Gemini 3.8 Flash via Cursor | Provider defaults |
 | `codex-sol-to-luna` | Codex GPT-6.1 Sol | Codex GPT-6 Luna | Provider defaults |
 | `omp-sol-to-flash` | OMP GPT-6 Sol via Codex | OMP Gemini 3.8 Flash via Cursor | Provider defaults |
 | `cursor-to-devin` | Cursor Grok 4.7 | Devin SWE 1.6 Slow | Provider defaults |
-| `antigravity-argon-to-flash` | Antigravity Gemini 4 Argon Medium | Antigravity Gemini 3.8 Flash Low | Model variants |
 | `claude-defaults` | Native Claude default | Native Claude default | Provider defaults; requires Claude login |
 | `codex-gpt6luna-to-gpt61sol` | Codex GPT-6 Luna | Codex GPT-6.1 Sol | Existing compatible profile |
 
-Flash Low uses AGY's `gemini-3.8-flash-low` model variant. Codex and Cursor effort is set with `thinkingOptionId`. All pairs can be customized in **Settings → Plugins → Model Fusion**: provider, model, mode, effort, brief detail, exploration, pushback, transport, timeout, and reuse limits.
+The preferred Grok sidekick uses Cursor's `grok-4.7` model with `thinkingOptionId: "medium"`. Codex and Cursor effort is set with `thinkingOptionId`. All pairs can be customized in **Settings → Plugins → Model Fusion**: provider, model, mode, effort, brief detail, exploration, pushback, transport, timeout, and reuse limits.
 
 ## Delegation and provider compatibility
 
-`auto` selects MCP for Codex and OMP, and fenced text for Cursor, Devin, and Antigravity. A Codex lead can use MCP while its AGY sidekick returns a fenced report. Leads started in fenced mode also use fenced reports for their sidekicks. Explicit `mcp` or `fenced` profiles are also available.
+`auto` selects MCP for Codex and OMP, and fenced text for Cursor and Devin. A Codex lead can use MCP while its Cursor sidekick returns a fenced report. Leads started in fenced mode also use fenced reports for their sidekicks. Explicit `mcp` or `fenced` profiles are also available.
 
 MCP uses a loopback HTTP endpoint with `delegate` and `report` tools. Reports require the delegation ID and a unique report token. Codex receives approval for only the relevant Fusion tool. Providers without an exact-tool preapproval capability use their regular permission flow. Cursor and Devin native MCP were verified with individual tool approvals; their automatic transport uses fenced text for unattended brief/report exchanges.
 
@@ -54,14 +53,19 @@ MCP uses a loopback HTTP endpoint with `delegate` and `report` tools. Reports re
 | OMP `cursor/gemini-3.8-flash` | Passed | Passed |
 | Devin `swe-1-6-slow` | Passed with tool approvals | Passed |
 | Cursor `grok-4.7` | Passed with tool approvals | Passed |
-| Antigravity `gemini-3.8-flash-low` | Fusion tools unavailable through the current adapter | Passed |
 | Native Claude | Awaiting CLI installation and authentication | Awaiting CLI installation and authentication |
 
-These checks used real provider sessions on a1mini with Paseo 0.13.0-beta.1 on October 24, 2026. AGY authentication was also confirmed with a direct authenticated CLI response. Compatibility depends on the installed provider adapter, model access, and account. Cursor-hosted Opus uses Cursor authentication and does not require a native Claude login.
+These checks used real provider sessions on a1mini with Paseo 0.13.0-beta.1 on October 24, 2026. Compatibility depends on the installed provider adapter, model access, and account. Cursor-hosted Opus uses Cursor authentication and does not require a native Claude login.
 
 When MCP session startup is rejected, the plugin can create a labeled text-only successor with recent conversation context. This requires **Fallback to fenced**. A lead's fenced brief is processed once per turn; reports are validated against the current delegation.
 
-For API-created leads, set `fusion.role=lead` and `fusion.profile=<profile-id>`, then supply delegation instructions. The panel supplies these labels and instructions automatically. Paseo's create hook does not expose labels, so the MCP endpoint is attached to non-internal sessions and checks the lead label when dispatching. If a provider supplies no caller ID and several leads are active, pass `lead_agent_id` explicitly.
+For API-created leads, set `fusion.role=lead` and `fusion.profile=<profile-id>`, then supply delegation instructions. The panel supplies these labels and instructions automatically. Paseo's create hook does not expose labels, so the MCP endpoint is attached to eligible non-internal sessions (excluding Antigravity) and checks the lead label when dispatching. If a provider supplies no caller ID and several leads are active, pass `lead_agent_id` explicitly.
+
+## Antigravity stays outside Fusion
+
+Antigravity is intentionally excluded. Google's [current FAQ](https://www.antigravity.google/docs/faq/) excludes consumer-plan use through third-party coding-agent or application wrappers, including wrappers that launch the official `agy` binary. An [October 16 clarification](https://discuss.ai.google.dev/t/clarification-on-consumer-plan-policy-for-invoking-official-agy-via-local-subprocess/189905) says the current FAQ supersedes older forum replies. Use `agy` directly, or in Google's documented direct scripting and CI workflows, separately from Fusion.
+
+Fusion rejects recognized Antigravity provider routes, omits them from presets and probes, and filters saved profiles that use them. Retired defaults migrate to Cursor Grok. Cursor Grok uses Cursor authentication; OMP's `cursor/gemini-3.8-flash` route uses its Cursor backend. Neither preset uses an Antigravity subscription. The earlier AGY probe results remain historical records and do not establish permission to use that integration.
 
 ## Persistence, limits, and costs
 
@@ -89,8 +93,8 @@ After changing plugin source, run `npm run typecheck` and `paseo plugin reload p
 
 - [x] Workspace panel with active work, history, search, pagination, details, navigation, cancellation, and delivery retry.
 - [x] Durable delegation state and recovery across plugin reloads.
-- [x] Real MCP and fenced protocol checks for Codex, OMP, Devin, and Cursor; authenticated AGY fenced checks.
-- [x] Additional model pairs, including Sol/Flash and Cursor Opus/Codex Luna with explicit effort settings.
+- [x] Real MCP and fenced protocol checks for Codex, OMP, Devin, and Cursor.
+- [x] Additional model pairs, including Sol/Grok, OMP Flash, and Cursor Opus/Codex Luna with explicit effort settings.
 - [x] Lead and sidekick usage totals with partial-price handling.
 - [x] Token-scoped reports, reusable sidekicks, timeout handling, and timeline/composer UI.
 - [x] Listing screenshots packaged and declared in the manifest.
@@ -100,7 +104,7 @@ Outstanding validation:
 - [ ] Run native Claude MCP and fenced checks after installing and authenticating its CLI on a1mini. Its profile and orchestration are implemented.
 - [ ] Confirm the panel visually in the native Paseo desktop and mobile clients. Browser fixture checks cover its real components and actions, with a React Native HTML shim; they do not exercise the full native app shell.
 
-No unimplemented feature remains from the original planned-feature list. AGY native MCP requires support from its provider adapter; fenced transport is available now.
+No unimplemented feature remains from the original planned-feature list. Antigravity support has been withdrawn under the provider-use policy above.
 
 ## Development checks
 
@@ -109,13 +113,12 @@ npm run typecheck
 npm test
 # Real-provider checks: consume provider usage and archive their own probe sessions.
 node scripts/provider-smoke.cjs omp
-node scripts/provider-smoke.cjs antigravity fenced
 node scripts/integration-smoke.cjs
 # Fixture-only component preview:
 npm run preview
 ```
 
-Live scripts require the Paseo 0.13.0-beta.1 CLI and a running local daemon. Protocol results are recorded in `docs/provider-verification.json`; integration results in `docs/integration-verification.json`. The default integration check exercises the two preferred pairs, sidekick reuse, lead review, workspace isolation, token redaction, and history after reload. The preview serves synthetic data on localhost:31339, performs no real agent actions, and uses the installed CLI's bundler.
+Live scripts require the Paseo 0.13.0-beta.1 CLI and a running local daemon. Protocol results are recorded in `docs/provider-verification.json`; the preferred Sol/Grok integration results are in `docs/integration-verification.json`. Earlier Opus/Luna results and the withdrawn AGY probes are preserved in `docs/integration-verification-history.json`. The default integration check exercises the two preferred pairs, sidekick reuse, lead review, workspace isolation, token redaction, and history after reload. The preview serves synthetic data on localhost:31339, performs no real agent actions, and uses the installed CLI's bundler.
 
 ## Credits
 

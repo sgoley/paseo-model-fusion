@@ -1,5 +1,6 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import { RETIRED_PROFILE_IDS } from "./provider-policy";
 
 export const ProviderModelSchema = z.object({
   /** Paseo provider ID, e.g. "codex", "claude", "opencode". */
@@ -40,21 +41,20 @@ const pair = (id: string, name: string, leadProvider: string, leadModel: string 
 });
 
 export const BUILTIN_PROFILES: Profile[] = [
-  pair("codex-to-antigravity-flash", "Codex 6.1 Sol → Antigravity Gemini 3.8 Flash", "codex", "gpt-6.1-sol", "antigravity", "gemini-3.8-flash-low", "high"),
+  pair("codex-to-cursor-grok", "Codex 6.1 Sol → Cursor Grok 4.7", "codex", "gpt-6.1-sol", "cursor", "grok-4.7", "high", "medium"),
   pair("cursor-opus-to-codex-luna", "Cursor Opus 5.5 → Codex 6 Luna", "cursor", "claude-opus-5-5", "codex", "gpt-6-luna", "high", "medium"),
   pair("codex-gpt6luna-to-gpt61sol", "Codex Luna → Sol (existing profile)", "codex", "gpt-6-luna", "codex", "gpt-6.1-sol"),
   pair("codex-sol-to-luna", "Codex Sol → Luna", "codex", "gpt-6.1-sol", "codex", "gpt-6-luna"),
   pair("codex-to-omp-flash", "Codex Sol → OMP Flash", "codex", "gpt-6.1-sol", "omp", "cursor/gemini-3.8-flash"),
   pair("omp-sol-to-flash", "OMP Sol → Flash", "omp", "openai-codex/gpt-6-sol", "omp", "cursor/gemini-3.8-flash"),
   pair("cursor-to-devin", "Cursor Grok → Devin SWE", "cursor", "grok-4.7", "devin", "swe-1-6-slow"),
-  pair("antigravity-argon-to-flash", "Antigravity Argon → Flash", "antigravity", "gemini-4-argon-medium", "antigravity", "gemini-3.8-flash-low"),
   pair("claude-defaults", "Claude default models (configure your pair)", "claude", null, "claude", null),
 ];
 
 export const FusionSettingsSchema = z.object({
   enabled: z.boolean().default(true),
   profiles: z.array(ProfileSchema).min(1).default(BUILTIN_PROFILES),
-  default_profile: z.string().min(1).default("codex-to-antigravity-flash"),
+  default_profile: z.string().min(1).default("codex-to-cursor-grok"),
   use_mcp_delegation: z.boolean().default(true),
   fallback_to_fenced: z.boolean().default(true),
   show_composer_pill: z.boolean().default(true),
@@ -63,7 +63,7 @@ export const FusionSettingsSchema = z.object({
 }).superRefine((values, context) => {
   const ids = values.profiles.map((profile) => profile.id);
   if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", path: ["profiles"], message: "Profile IDs must be unique" });
-  if (![...ids, ...BUILTIN_PROFILES.map((profile) => profile.id)].includes(values.default_profile)) context.addIssue({
+  if (![...ids, ...BUILTIN_PROFILES.map((profile) => profile.id), ...RETIRED_PROFILE_IDS].includes(values.default_profile)) context.addIssue({
     code: "custom", path: ["default_profile"], message: "The default profile must exist",
   });
   if (values.enabled && !values.use_mcp_delegation && !values.fallback_to_fenced) context.addIssue({
