@@ -22,7 +22,8 @@ async function main() {
     return params.report_token === params.delegation_id;
   });
   const agents = [];
-  const previous = existsSync("docs/provider-verification.json") ? JSON.parse(readFileSync("docs/provider-verification.json", "utf8")).results : [];
+  const previousDoc = existsSync("docs/provider-verification.json") ? JSON.parse(readFileSync("docs/provider-verification.json", "utf8")) : {};
+  const previous = previousDoc.results || [];
   const results = process.argv[2] ? previous.filter((item) => !process.argv[2].split(",").includes(item.provider)) : [];
   const cwd = join(tmpdir(), "paseo-model-fusion-provider-check");
   mkdirSync(cwd, { recursive: true });
@@ -37,7 +38,7 @@ async function main() {
     agents.push(parent);
     const pairs = [
       ["codex", "gpt-6-luna"], ["omp", "cursor/gemini-3.8-flash"],
-      ["devin", "swe-1-6-slow"], ["cursor", "grok-4.7"], ["claude", null],
+      ["devin", "swe-1-6"], ["cursor", "grok-4.7"], ["claude", "claude-sonnet-5-5"],
     ];
     for (const [provider, model] of pairs) {
       if (process.argv[2] && !process.argv[2].split(",").includes(provider)) continue;
@@ -47,6 +48,7 @@ async function main() {
         continue;
       }
       const result = { ...(previous.find((item) => item.provider === provider) || {}), provider, model };
+      delete result.reason;
       for (const transport of process.argv[3] ? [process.argv[3]] : ["mcp", "fenced"]) {
         console.log(provider + ": checking " + transport);
         result[transport] = "failed";
@@ -107,7 +109,8 @@ async function main() {
     await Promise.allSettled(agents.map((agent) => agent.archive()));
     await server.stop(); await api.dispose(); await driver.close();
   }
-  const output = { verifiedAt: new Date().toISOString(), paseoVersion: "0.13.0-beta.1", scope: "Native MCP delegate/report and independent fenced brief/report provider sessions; not a guarantee for every model or account.", results };
+  const output = { verifiedAt: new Date().toISOString(), paseoVersion: "0.13.0-beta.1", scope: "Native MCP delegate/report and independent fenced brief/report provider sessions; not a guarantee for every model or account.", results,
+    ...(previousDoc.policyReviewedAt ? { policyReviewedAt: previousDoc.policyReviewedAt, policySource: previousDoc.policySource } : {}) };
   mkdirSync("docs", { recursive: true });
   writeFileSync("docs/provider-verification.json", JSON.stringify(output, null, 2) + "\n");
   console.log(JSON.stringify(output, null, 2));

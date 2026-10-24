@@ -1,5 +1,5 @@
 {
-  "verifiedAt": "2026-10-24T14:31:57.893Z",
+  "verifiedAt": "2026-10-24T21:40:22.992Z",
   "paseoVersion": "0.13.0-beta.1",
   "scope": "Native MCP delegate/report and independent fenced brief/report provider sessions; not a guarantee for every model or account.",
   "results": [
@@ -28,13 +28,6 @@
       "note": "Observed in earlier live protocol checks in this work session; native Cursor and Devin required individual Fusion tool approvals."
     },
     {
-      "provider": "devin",
-      "model": "swe-1-6-slow",
-      "mcp": "passed",
-      "fenced": "passed",
-      "note": "Observed in earlier live protocol checks in this work session; native Cursor and Devin required individual Fusion tool approvals."
-    },
-    {
       "provider": "cursor",
       "model": "grok-4.7",
       "mcp": "passed",
@@ -43,10 +36,16 @@
     },
     {
       "provider": "claude",
-      "model": null,
-      "mcp": "unavailable",
-      "fenced": "unavailable",
-      "reason": "Native Claude CLI target is not installed or authenticated on a1mini."
+      "model": "claude-sonnet-5-5",
+      "mcp": "passed",
+      "fenced": "passed"
+    },
+    {
+      "provider": "devin",
+      "model": "swe-1-6",
+      "mcp": "passed",
+      "fenced": "passed",
+      "note": "Observed in earlier live protocol checks in this work session; native Cursor and Devin required individual Fusion tool approvals."
     }
   ],
   "policyReviewedAt": "2026-10-24T15:20:02.868562+00:00",

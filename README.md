@@ -30,30 +30,32 @@ The first pair is the default for fresh settings. Existing supported defaults an
 
 | Profile ID | Lead | Sidekick | Effort: lead / sidekick |
 | --- | --- | --- | --- |
-| `codex-to-cursor-grok` | Codex GPT-6.1 Sol | Cursor Grok 4.7 | **High / Medium** |
+| `codex-to-cursor-grok` | Codex GPT-6.1 Sol | Cursor Grok 4.7 | **High** / provider default |
 | `cursor-opus-to-codex-luna` | Cursor Claude Opus 5.5 | Codex GPT-6 Luna | **High / Medium** |
 | `codex-to-omp-flash` | Codex GPT-6.1 Sol | OMP Gemini 3.8 Flash via Cursor | Provider defaults |
 | `codex-sol-to-luna` | Codex GPT-6.1 Sol | Codex GPT-6 Luna | Provider defaults |
 | `omp-sol-to-flash` | OMP GPT-6 Sol via Codex | OMP Gemini 3.8 Flash via Cursor | Provider defaults |
-| `cursor-to-devin` | Cursor Grok 4.7 | Devin SWE 1.6 Slow | Provider defaults |
-| `claude-defaults` | Native Claude default | Native Claude default | Provider defaults; requires Claude login |
+| `cursor-to-devin` | Cursor Grok 4.7 | Devin SWE 1.6 | Provider defaults |
+| `codex-astra-to-devin-swe2` | Codex GPT-6 Astra | Devin SWE-2 High | Provider defaults |
+| `claude-opus-to-devin-swe2` | Claude Opus 5.5 | Devin SWE-2 High | Provider defaults |
+| `claude-opus-to-sonnet` | Claude Opus 5.5 | Claude Sonnet 5.5 | Provider defaults; requires Claude login |
 | `codex-gpt6luna-to-gpt61sol` | Codex GPT-6 Luna | Codex GPT-6.1 Sol | Existing compatible profile |
 
-The preferred Grok sidekick uses Cursor's `grok-4.7` model with `thinkingOptionId: "medium"`. Codex and Cursor effort is set with `thinkingOptionId`. All pairs can be customized in **Settings → Plugins → Model Fusion**: provider, model, mode, effort, brief detail, exploration, pushback, transport, timeout, and reuse limits.
+The preferred Grok sidekick uses Cursor's `grok-4.7` model; its current adapter does not expose effort options, so it runs at the provider default. Codex, Claude, and Cursor effort is set with `thinkingOptionId` where the provider supports it. All pairs can be customized in **Settings → Plugins → Model Fusion**: provider, model, mode, effort, brief detail, exploration, pushback, transport, timeout, and reuse limits.
 
 ## Delegation and provider compatibility
 
-`auto` selects MCP for Codex and OMP, and fenced text for Cursor and Devin. A Codex lead can use MCP while its Cursor sidekick returns a fenced report. Leads started in fenced mode also use fenced reports for their sidekicks. Explicit `mcp` or `fenced` profiles are also available.
+`auto` selects MCP for Codex, Claude, and OMP, and fenced text for Cursor and Devin. A Codex lead can use MCP while its Cursor sidekick returns a fenced report. Leads started in fenced mode also use fenced reports for their sidekicks. Explicit `mcp` or `fenced` profiles are also available.
 
-MCP uses a loopback HTTP endpoint with `delegate` and `report` tools. Reports require the delegation ID and a unique report token. Codex receives approval for only the relevant Fusion tool. Providers without an exact-tool preapproval capability use their regular permission flow. Cursor and Devin native MCP were verified with individual tool approvals; their automatic transport uses fenced text for unattended brief/report exchanges.
+MCP uses a loopback HTTP endpoint with `delegate` and `report` tools. Reports require the delegation ID and a unique report token. Codex and Claude receive approval for only the relevant Fusion tool. Providers without an exact-tool preapproval capability use their regular permission flow. Cursor and Devin native MCP were verified with individual tool approvals; their automatic transport uses fenced text for unattended brief/report exchanges.
 
 | Provider and tested model | Native MCP | Fenced brief/report |
 | --- | --- | --- |
 | Codex `gpt-6-luna` | Passed | Passed |
 | OMP `cursor/gemini-3.8-flash` | Passed | Passed |
-| Devin `swe-1-6-slow` | Passed with tool approvals | Passed |
+| Devin `swe-1-6` | Passed with tool approvals | Passed |
 | Cursor `grok-4.7` | Passed with tool approvals | Passed |
-| Native Claude | Awaiting CLI installation and authentication | Awaiting CLI installation and authentication |
+| Claude `claude-sonnet-5-5` | Passed | Passed |
 
 These checks used real provider sessions on a1mini with Paseo 0.13.0-beta.1 on October 24, 2026. Compatibility depends on the installed provider adapter, model access, and account. Cursor-hosted Opus uses Cursor authentication and does not require a native Claude login.
 
@@ -93,7 +95,7 @@ After changing plugin source, run `npm run typecheck` and `paseo plugin reload p
 
 - [x] Workspace panel with active work, history, search, pagination, details, navigation, cancellation, and delivery retry.
 - [x] Durable delegation state and recovery across plugin reloads.
-- [x] Real MCP and fenced protocol checks for Codex, OMP, Devin, and Cursor.
+- [x] Real MCP and fenced protocol checks for Codex, OMP, Devin, Cursor, and Claude.
 - [x] Additional model pairs, including Sol/Grok, OMP Flash, and Cursor Opus/Codex Luna with explicit effort settings.
 - [x] Lead and sidekick usage totals with partial-price handling.
 - [x] Token-scoped reports, reusable sidekicks, timeout handling, and timeline/composer UI.
@@ -101,7 +103,6 @@ After changing plugin source, run `npm run typecheck` and `paseo plugin reload p
 
 Outstanding validation:
 
-- [ ] Run native Claude MCP and fenced checks after installing and authenticating its CLI on a1mini. Its profile and orchestration are implemented.
 - [ ] Confirm the panel visually in the native Paseo desktop and mobile clients. Browser fixture checks cover its real components and actions, with a React Native HTML shim; they do not exercise the full native app shell.
 
 No unimplemented feature remains from the original planned-feature list. Antigravity support has been withdrawn under the provider-use policy above.

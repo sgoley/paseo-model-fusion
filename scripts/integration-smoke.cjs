@@ -1,7 +1,7 @@
 // Makes tiny real-provider calls against the installed plugin. Archives only its own sessions.
 require('./register-typescript.cjs');
 const assert = require('node:assert/strict');
-const { mkdirSync, writeFileSync } = require('node:fs');
+const { mkdirSync, writeFileSync, readFileSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { connect } = require('./paseo-connection.cjs');
@@ -71,7 +71,9 @@ async function main() {
     const reloaded = await driver.reloadPlugin(pluginId); assert.equal(reloaded.status, 'running');
     const after = await history();
     assert.deepEqual(after.delegations.map(x => [x.id, x.status, x.report?.summary, x.reportDelivered]), before.delegations.map(x => [x.id, x.status, x.report?.summary, x.reportDelivered]));
-    const output = { verifiedAt: new Date().toISOString(), paseoVersion: '0.13.0-beta.1', results, reloadPreservedHistory: true, workspaceIsolation: true, redactedViews: true };
+    const previousDoc = existsSync('docs/integration-verification.json') ? JSON.parse(readFileSync('docs/integration-verification.json', 'utf8')) : {};
+    const kept = (previousDoc.results || []).filter((item) => !results.some((result) => result.profileId === item.profileId));
+    const output = { verifiedAt: new Date().toISOString(), paseoVersion: '0.13.0-beta.1', results: [...kept, ...results], reloadPreservedHistory: true, workspaceIsolation: true, redactedViews: true };
     mkdirSync('docs', { recursive: true }); writeFileSync('docs/integration-verification.json', JSON.stringify(output, null, 2) + '\n');
     console.log(JSON.stringify(output, null, 2));
   } finally {

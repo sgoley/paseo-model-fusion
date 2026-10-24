@@ -41,14 +41,16 @@ const pair = (id: string, name: string, leadProvider: string, leadModel: string 
 });
 
 export const BUILTIN_PROFILES: Profile[] = [
-  pair("codex-to-cursor-grok", "Codex 6.1 Sol → Cursor Grok 4.7", "codex", "gpt-6.1-sol", "cursor", "grok-4.7", "high", "medium"),
+  pair("codex-to-cursor-grok", "Codex 6.1 Sol → Cursor Grok 4.7", "codex", "gpt-6.1-sol", "cursor", "grok-4.7", "high"),
   pair("cursor-opus-to-codex-luna", "Cursor Opus 5.5 → Codex 6 Luna", "cursor", "claude-opus-5-5", "codex", "gpt-6-luna", "high", "medium"),
   pair("codex-gpt6luna-to-gpt61sol", "Codex Luna → Sol (existing profile)", "codex", "gpt-6-luna", "codex", "gpt-6.1-sol"),
   pair("codex-sol-to-luna", "Codex Sol → Luna", "codex", "gpt-6.1-sol", "codex", "gpt-6-luna"),
   pair("codex-to-omp-flash", "Codex Sol → OMP Flash", "codex", "gpt-6.1-sol", "omp", "cursor/gemini-3.8-flash"),
   pair("omp-sol-to-flash", "OMP Sol → Flash", "omp", "openai-codex/gpt-6-sol", "omp", "cursor/gemini-3.8-flash"),
-  pair("cursor-to-devin", "Cursor Grok → Devin SWE", "cursor", "grok-4.7", "devin", "swe-1-6-slow"),
-  pair("claude-defaults", "Claude default models (configure your pair)", "claude", null, "claude", null),
+  pair("cursor-to-devin", "Cursor Grok → Devin SWE", "cursor", "grok-4.7", "devin", "swe-1-6"),
+  pair("codex-astra-to-devin-swe2", "Codex Astra → Devin SWE-2 High", "codex", "gpt-6-astra", "devin", "swe-2-high"),
+  pair("claude-opus-to-devin-swe2", "Claude Opus 5.5 → Devin SWE-2 High", "claude", "claude-opus-5-5", "devin", "swe-2-high"),
+  pair("claude-opus-to-sonnet", "Claude Opus 5.5 → Sonnet 5.5", "claude", "claude-opus-5-5", "claude", "claude-sonnet-5-5"),
 ];
 
 export const FusionSettingsSchema = z.object({
