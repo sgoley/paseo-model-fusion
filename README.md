@@ -18,6 +18,12 @@ Open a workspace, then **Command Center → Open Model Fusion**. Choose **Start 
 
 The workspace panel shows active work and searchable, paginated history. Expand a delegation to read its constraints, success criteria, files, report, timestamps, and usage. Open either agent, cancel active work, or retry a saved report's delivery. Composer pills open this panel; timeline cards show each delegation's progress.
 
+## Listing screenshots
+
+![Model Fusion workspace with sample delegation history](assets/model-fusion-workspace.png)
+
+[Model-pair selection and effort settings](assets/model-fusion-pairs.png). These screenshots use the real components with sample RPC data in the browser preview; native app chrome is not shown. Both images are declared in the plugin manifest and included in the package.
+
 ## Model pairs and effort
 
 The first pair is the default for fresh settings. Existing saved defaults and customized profiles are preserved. The new-lead form shows each side's model and effort before starting.
@@ -87,6 +93,7 @@ After changing plugin source, run `npm run typecheck` and `paseo plugin reload p
 - [x] Additional model pairs, including Sol/Flash and Cursor Opus/Codex Luna with explicit effort settings.
 - [x] Lead and sidekick usage totals with partial-price handling.
 - [x] Token-scoped reports, reusable sidekicks, timeout handling, and timeline/composer UI.
+- [x] Listing screenshots packaged and declared in the manifest.
 
 Outstanding validation:
 

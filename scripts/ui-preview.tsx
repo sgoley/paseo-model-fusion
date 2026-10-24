@@ -6,6 +6,7 @@ import { FusionWorkspacePanel } from "../client/workspace-panel";
 import { DelegationTimelineCard } from "../client/timeline-card";
 import { DEFAULT_SETTINGS } from "../shared/settings";
 
+const listing = new URLSearchParams(window.location.search).has("listing");
 const records = Array.from({ length: 32 }, (_, index) => ({
   id: "delegation-" + index, workspaceId: "preview-workspace", leadId: "lead-" + index,
   sidekickId: "sidekick-" + index, profileId: "codex-sol-to-luna", sidekickModel: "codex/gpt-6-luna",
@@ -20,6 +21,18 @@ const records = Array.from({ length: 32 }, (_, index) => ({
   reportDelivered: index !== 2, error: index === 2 ? "Report delivery is pending." : null,
   costLead: index === 0 ? null : 0.07, costSidekick: index === 0 ? null : 0.01,
 }));
+// Keep listing samples small and free of private workspace or agent data.
+if (listing) {
+  const active = records[0];
+  const completed = records[3];
+  active.profileId = "codex-to-antigravity-flash";
+  active.sidekickModel = "antigravity/gemini-3.8-flash-low";
+  completed.profileId = "cursor-opus-to-codex-luna";
+  completed.brief.goal = "Review the delegation recovery implementation";
+  completed.report!.summary = "Restored delegation history and report delivery after a plugin reload.";
+  completed.report!.changes = ["Persisted brief and report state", "Retried pending report delivery"];
+  records.splice(0, records.length, active, completed);
+}
 (globalThis as any).__fusionPreviewActions = [];
 async function invoke(method: string, input: any) {
   if ((globalThis as any).__fusionPreviewError === method) throw new Error("Preview request failed");
@@ -29,7 +42,7 @@ async function invoke(method: string, input: any) {
     const filtered = records.filter((item) => (!input.activeOnly || item.status === "running") &&
       (!search || [item.brief.goal, item.report?.summary, item.sidekickModel, item.profileId].some((text) => text?.toLowerCase().includes(search))));
     return { delegations: filtered.slice(input.offset, input.offset + input.limit), total: filtered.length,
-      active: records.filter((item) => item.status === "running").length, costLead: 2.17, costSidekick: 0.31, missingCost: true };
+      active: records.filter((item) => item.status === "running").length, costLead: listing ? 0.07 : 2.17, costSidekick: listing ? 0.01 : 0.31, missingCost: true };
   }
   if (method === "fusion.create-lead") {
     (globalThis as any).__fusionPreviewActions.push({ method, input });
@@ -65,10 +78,10 @@ function Preview() {
   };
   return <QueryClientProvider client={queryClient}><PluginRpcProvider invoke={invoke}>
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: theme.colors.surface0, color: theme.colors.foreground }}>
-      <div style={{ padding: 10, display: "flex", gap: 16, alignItems: "center", borderBottom: "1px solid " + theme.colors.border }}>
+      {!listing && <div style={{ padding: 10, display: "flex", gap: 16, alignItems: "center", borderBottom: "1px solid " + theme.colors.border }}>
         <span>Model Fusion UI preview · fixture data</span>
         <button aria-label="Switch theme" onClick={() => setDark(!dark)}>{dark ? "Light theme" : "Dark theme"}</button><span role="status">{action}</span>
-      </div>
+      </div>}
       {new URLSearchParams(window.location.search).has("card")
         ? <DelegationTimelineCard {...host} agentId="preview" timestamp={new Date()} item={{ type: "plugin", kind: "delegation", version: 1, data: {
           status: "completed", lead_agent_id: "lead", sidekick_agent_id: "sidekick", sidekick_model: "codex/gpt-6-luna",

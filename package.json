@@ -9,7 +9,8 @@
     "client/",
     "server/",
     "shared/",
-    "OVERVIEW.md"
+    "OVERVIEW.md",
+    "assets/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
